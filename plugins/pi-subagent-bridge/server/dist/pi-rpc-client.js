@@ -7,7 +7,7 @@ export class PiRpcClient {
     pending = new Map();
     constructor(options) {
         this.options = options;
-        this.child = spawn(options.executable, options.args ?? ["--mode", "rpc", "--no-session"], {
+        this.child = spawn(options.executable, options.args ?? ["--mode", "rpc"], {
             cwd: options.cwd,
             env: { ...process.env, ...options.env },
             detached: true,

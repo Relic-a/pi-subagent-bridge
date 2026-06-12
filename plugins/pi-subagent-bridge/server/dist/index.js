@@ -14,6 +14,7 @@ const StartSchema = z.object({
     provider: z.string().optional(),
     model_id: z.string().optional(),
     thinking_level: z.string().optional(),
+    session_id: z.string().optional(),
 });
 const RunIdSchema = z.object({ run_id: z.string().uuid() });
 const RecentSchema = z.object({
@@ -29,11 +30,8 @@ const store = new ToolCallStore(path.join(dataDir, "state.sqlite"), {
 const manager = new RunManager({
     store,
     piExecutable: process.env.PI_EXECUTABLE ?? "pi",
-    piArgs: splitArgs(process.env.PI_RPC_ARGS) ?? [
-        "--mode",
-        "rpc",
-        "--no-session",
-    ],
+    piArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
+    piSessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
     allowedRoots: (process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot())
         .split(path.delimiter)
         .filter(Boolean),
@@ -42,6 +40,8 @@ const manager = new RunManager({
     stopGraceMs: envInt("PI_BRIDGE_STOP_GRACE_MS", 5000),
     startMethod: process.env.PI_RPC_START_METHOD ?? "prompt",
     abortMethod: process.env.PI_RPC_ABORT_METHOD ?? "abort",
+    sessionIdFlag: process.env.PI_RPC_SESSION_ID_FLAG ?? "--session-id",
+    noSessionFlag: process.env.PI_RPC_NO_SESSION_FLAG,
 });
 const server = new Server({ name: "pi-subagent-bridge", version: "0.1.0" }, { capabilities: { tools: {} } });
 server.onerror = (error) => {
@@ -69,7 +69,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         {
             name: "pi_start",
-            description: "Start one isolated Pi RPC subprocess and return a stable run_id immediately.",
+            description: "Start a Pi RPC subprocess and return a stable run_id immediately. Optionally pass a session_id to continue that Pi session.",
             inputSchema: {
                 type: "object",
                 required: ["task", "working_directory"],
@@ -79,6 +79,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     provider: { type: "string" },
                     model_id: { type: "string" },
                     thinking_level: { type: "string" },
+                    session_id: {
+                        type: "string",
+                        description: "Optional Pi session ID to continue. When absent Pi creates a new persistent session and returns its ID in diagnostics and results.",
+                    },
                 },
                 additionalProperties: false,
             },
@@ -115,7 +119,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         {
             name: "pi_get_run",
-            description: "Return diagnostic state for recovery and debugging. Not the normal waiting mechanism.",
+            description: "Return diagnostic state including any session_id for recovery and debugging. Not the normal waiting mechanism.",
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
@@ -140,11 +144,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             case "pi_list_models":
                 return jsonResult(await listModels({
                     executable: process.env.PI_EXECUTABLE ?? "pi",
-                    rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? [
-                        "--mode",
-                        "rpc",
-                        "--no-session",
-                    ],
+                    rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
                     timeoutMs: envInt("PI_BRIDGE_MODEL_LIST_TIMEOUT_MS", 15000),
                     modelListMethod: process.env.PI_RPC_MODEL_LIST_METHOD ?? "get_available_models",
                 }, ModelsSchema.parse(args ?? {}).query));

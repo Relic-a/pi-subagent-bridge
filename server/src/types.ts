@@ -27,6 +27,7 @@ export interface StartRunInput {
   provider?: string;
   model_id?: string;
   thinking_level?: string;
+  session_id?: string;
 }
 
 export interface RunResult {
@@ -34,6 +35,7 @@ export interface RunResult {
   state: TerminalState;
   final_answer: string;
   error?: string;
+  session_id?: string;
 }
 
 export interface ToolCallAudit {
@@ -54,6 +56,7 @@ export interface RunDiagnostics {
   provider?: string;
   model_id?: string;
   thinking_level?: string;
+  session_id?: string;
   error?: string;
   has_result: boolean;
 }

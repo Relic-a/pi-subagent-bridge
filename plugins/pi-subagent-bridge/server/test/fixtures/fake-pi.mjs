@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 
+// Parse command-line arguments for session continuation.
+const cliArgs = process.argv.slice(2);
+const cliSessionId = parseSessionFlag(cliArgs);
+const sessionId = cliSessionId ?? `session-${process.pid}-${Date.now()}`;
+if (process.env.FAKE_PI_ARGS_FILE) {
+  fs.appendFileSync(process.env.FAKE_PI_ARGS_FILE, `${JSON.stringify(cliArgs)}\n`);
+}
+
 let aborted = false;
 let activeTimer;
 let buffer = "";
@@ -17,6 +25,15 @@ process.stdin.on("data", (chunk) => {
   }
 });
 
+function parseSessionFlag(argv) {
+  let idx = argv.indexOf("--session-id");
+  if (idx < 0) idx = argv.indexOf("--session");
+  if (idx >= 0 && idx + 1 < argv.length) {
+    return argv[idx + 1];
+  }
+  return null;
+}
+
 function handleLine(line) {
   let message;
   try {
@@ -25,6 +42,20 @@ function handleLine(line) {
     console.log("{ malformed");
     return;
   }
+  // Emit session_created event on first prompt, or when session was explicitly provided
+  if (message.type === "prompt" && message.session_signal !== "suppressed") {
+    const wasResumed = cliSessionId != null;
+    console.log(
+      JSON.stringify({
+        event: wasResumed ? "session_started" : "session_created",
+        params: {
+          session_id: sessionId,
+          resumed: wasResumed,
+        },
+      }),
+    );
+  }
+
   if (message.type === "get_available_models") {
     if (process.env.FAKE_PI_MALFORMED_MODELS === "1") {
       console.log(JSON.stringify({ type: "response", command: "get_available_models", id: message.id, success: true, data: { nope: true } }));
@@ -63,7 +94,15 @@ function handleLine(line) {
     return;
   }
   if (message.type === "prompt") {
-    console.log(JSON.stringify({ type: "response", command: "prompt", id: message.id, success: true }));
+    console.log(
+      JSON.stringify({
+        type: "response",
+        command: "prompt",
+        id: message.id,
+        success: true,
+        data: { session_id: sessionId },
+      }),
+    );
     if (message.message.includes("crash")) {
       setTimeout(() => process.exit(7), 20);
       return;

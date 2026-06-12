@@ -22,6 +22,7 @@ export class ToolCallStore {
         provider TEXT,
         model_id TEXT,
         thinking_level TEXT,
+        session_id TEXT,
         error TEXT,
         final_answer TEXT
       );
@@ -34,12 +35,13 @@ export class ToolCallStore {
         arguments_json TEXT
       );
     `);
+        this.ensureColumn("runs", "session_id", "TEXT");
     }
     createRun(record) {
         this.db
             .prepare(`INSERT INTO runs
-        (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, error, final_answer)
-        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @error, @final_answer)`)
+        (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, session_id, error, final_answer)
+        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer)`)
             .run(normalizeRecord(record));
         this.pruneRuns();
     }
@@ -56,6 +58,11 @@ export class ToolCallStore {
             error: fields?.error,
             final_answer: fields?.final_answer,
         });
+    }
+    updateRunSessionId(runId, sessionId) {
+        this.db
+            .prepare(`UPDATE runs SET session_id = COALESCE(@session_id, session_id) WHERE run_id = @run_id`)
+            .run({ run_id: runId, session_id: sessionId });
     }
     getRun(runId) {
         const row = this.db
@@ -111,6 +118,14 @@ export class ToolCallStore {
        (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT ?)`)
             .run(this.maxRuns);
     }
+    ensureColumn(table, column, type) {
+        const columns = this.db
+            .prepare(`PRAGMA table_info(${table})`)
+            .all();
+        if (!columns.some((entry) => entry.name === column)) {
+            this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        }
+    }
 }
 function normalizeRecord(record) {
     return {
@@ -118,6 +133,7 @@ function normalizeRecord(record) {
         provider: record.provider ?? null,
         model_id: record.model_id ?? null,
         thinking_level: record.thinking_level ?? null,
+        session_id: record.session_id ?? null,
         error: record.error ?? null,
         final_answer: record.final_answer ?? null,
     };
@@ -133,6 +149,7 @@ function mapRun(row) {
         provider: row.provider ?? undefined,
         model_id: row.model_id ?? undefined,
         thinking_level: row.thinking_level ?? undefined,
+        session_id: row.session_id ?? undefined,
         error: row.error ?? undefined,
         final_answer: row.final_answer ?? undefined,
         has_result: row.final_answer != null,

@@ -27,16 +27,12 @@ export class PiRpcClient {
   >();
 
   constructor(private options: PiClientOptions) {
-    this.child = spawn(
-      options.executable,
-      options.args ?? ["--mode", "rpc", "--no-session"],
-      {
-        cwd: options.cwd,
-        env: { ...process.env, ...options.env },
-        detached: true,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    this.child = spawn(options.executable, options.args ?? ["--mode", "rpc"], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     this.child.stderr.on("data", (chunk) => process.stderr.write(chunk));
     this.child.on("error", (error) => {
       for (const pending of this.pending.values()) {

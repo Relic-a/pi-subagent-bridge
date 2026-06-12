@@ -33,12 +33,15 @@ export interface RunManagerOptions {
   store: ToolCallStore;
   piExecutable: string;
   piArgs?: string[];
+  piSessionDir?: string;
   allowedRoots: string[];
   maxConcurrentRuns: number;
   maxRuntimeMs: number;
   stopGraceMs: number;
   startMethod: string;
   abortMethod: string;
+  sessionIdFlag?: string;
+  noSessionFlag?: string;
 }
 
 export class RunManager {
@@ -47,7 +50,9 @@ export class RunManager {
 
   constructor(private options: RunManagerOptions) {}
 
-  async start(input: StartRunInput): Promise<{ run_id: string }> {
+  async start(
+    input: StartRunInput,
+  ): Promise<{ run_id: string; session_id?: string }> {
     if (this.active.size >= this.options.maxConcurrentRuns) {
       throw new Error(
         `Concurrency limit reached (${this.options.maxConcurrentRuns}).`,
@@ -66,6 +71,10 @@ export class RunManager {
       };
     });
 
+    const sessionId = input.session_id;
+    const sessionSnapshot = sessionId
+      ? undefined
+      : snapshotSessionFiles(this.sessionDirsFor(cwd));
     const client = new PiRpcClient({
       executable: this.options.piExecutable,
       args: this.argsFor(input),
@@ -87,6 +96,10 @@ export class RunManager {
       abortSent: false,
     };
     (run as ActiveRun & { client: PiRpcClient }).client = client;
+    (run as ActiveRun & { sessionId?: string }).sessionId = sessionId;
+    (
+      run as ActiveRun & { sessionSnapshot?: Map<string, number> }
+    ).sessionSnapshot = sessionSnapshot;
     this.active.set(runId, run);
     this.options.store.createRun({
       run_id: runId,
@@ -98,6 +111,7 @@ export class RunManager {
       provider: input.provider,
       model_id: input.model_id,
       thinking_level: input.thinking_level,
+      session_id: sessionId,
     });
 
     run.timeoutTimer = setTimeout(() => {
@@ -110,6 +124,7 @@ export class RunManager {
         state: "timed_out",
         final_answer: "",
         error: "Maximum runtime exceeded.",
+        session_id: this.getRunSessionId(runId),
       });
       this.active.delete(runId);
     }, this.options.maxRuntimeMs);
@@ -118,14 +133,17 @@ export class RunManager {
       .request(this.options.startMethod, {
         message: input.task,
       })
-      .then(() => this.transition(runId, "running"))
+      .then((data) => {
+        this.captureSessionId(runId, data);
+        this.transition(runId, "running");
+      })
       .catch((error) => {
         const active = this.active.get(runId);
         if (active?.state === "stopping") return;
         this.failRun(runId, `Pi start failed: ${error.message}`);
       });
 
-    return { run_id: runId };
+    return { run_id: runId, session_id: sessionId };
   }
 
   wait(runId: string): Promise<RunResult> {
@@ -140,6 +158,7 @@ export class RunManager {
       state: record.state as RunResult["state"],
       final_answer: record.final_answer ?? "",
       error: record.error,
+      session_id: record.session_id,
     });
   }
 
@@ -162,6 +181,7 @@ export class RunManager {
               run_id: runId,
               state: "stopped",
               final_answer: "",
+              session_id: this.getRunSessionId(runId),
             });
             this.cleanup(runId);
           }
@@ -183,6 +203,7 @@ export class RunManager {
       provider: record.provider,
       model_id: record.model_id,
       thinking_level: record.thinking_level,
+      session_id: record.session_id,
       error: record.error,
       has_result: Boolean(record.final_answer),
     };
@@ -198,6 +219,7 @@ export class RunManager {
       state: record.state as RunResult["state"],
       final_answer: record.final_answer ?? "",
       error: record.error,
+      session_id: record.session_id,
     };
   }
 
@@ -222,6 +244,7 @@ export class RunManager {
         run_id: run.run_id,
         state: "stopped",
         final_answer: "",
+        session_id: this.getRunSessionId(run.run_id),
       });
       this.cleanup(run.run_id);
     }
@@ -249,6 +272,16 @@ export class RunManager {
             : redactSecrets(params.arguments ?? params.args),
       });
     }
+    if (name === "session_created" || name === "session_started") {
+      const sid = extractSessionId(params);
+      if (sid) {
+        const run = this.active.get(runId);
+        if (run) {
+          (run as ActiveRun & { sessionId?: string }).sessionId = sid;
+          this.options.store.updateRunSessionId(runId, sid);
+        }
+      }
+    }
     if (name === "agent_end") {
       const active = this.active.get(runId);
       const requestedState = String(
@@ -267,6 +300,8 @@ export class RunManager {
           extractFinalAnswer(params.messages) ??
           "",
       );
+      this.captureSessionId(runId, params);
+      const sessionId = this.getRunSessionId(runId);
       this.transition(runId, state, {
         final_answer: state === "completed" ? finalAnswer : undefined,
         error:
@@ -282,6 +317,7 @@ export class RunManager {
           state === "failed"
             ? String(params.error ?? "Pi run failed.")
             : undefined,
+        session_id: sessionId,
       });
       if (active) this.killRun(active, "SIGTERM");
       this.cleanup(runId);
@@ -296,9 +332,15 @@ export class RunManager {
     if (this.shuttingDown) return;
     const active = this.active.get(runId);
     if (!active || TERMINAL_STATES.has(active.state)) return;
+    const sessionId = this.getRunSessionId(runId);
     if (active.state === "stopping") {
       this.transition(runId, "stopped");
-      active.resolveOnce({ run_id: runId, state: "stopped", final_answer: "" });
+      active.resolveOnce({
+        run_id: runId,
+        state: "stopped",
+        final_answer: "",
+        session_id: sessionId,
+      });
     } else {
       this.transition(runId, "failed", {
         error: `Pi process exited unexpectedly: code=${code} signal=${signal}`,
@@ -308,6 +350,7 @@ export class RunManager {
         state: "failed",
         final_answer: "",
         error: `Pi process exited unexpectedly: code=${code} signal=${signal}`,
+        session_id: sessionId,
       });
     }
     this.cleanup(runId);
@@ -317,12 +360,14 @@ export class RunManager {
     const active = this.active.get(runId);
     if (!active || TERMINAL_STATES.has(active.state)) return;
     if (active.state === "stopping") return;
+    const sessionId = this.getRunSessionId(runId);
     this.transition(runId, "failed", { error });
     active.resolveOnce({
       run_id: runId,
       state: "failed",
       final_answer: "",
       error,
+      session_id: sessionId,
     });
     this.cleanup(runId);
   }
@@ -381,6 +426,11 @@ export class RunManager {
 
   private argsFor(input: StartRunInput): string[] | undefined {
     const args = [...(this.options.piArgs ?? [])];
+    if (input.session_id) {
+      args.push(this.options.sessionIdFlag ?? "--session-id", input.session_id);
+    } else if (this.options.noSessionFlag) {
+      args.push(this.options.noSessionFlag);
+    }
     if (input.provider) args.push("--provider", input.provider);
     if (input.model_id)
       args.push(
@@ -391,6 +441,58 @@ export class RunManager {
       );
     if (input.thinking_level) args.push("--thinking", input.thinking_level);
     return args.length > 0 ? args : undefined;
+  }
+
+  private captureSessionId(runId: string, data: unknown): void {
+    const sid = extractSessionId(data) ?? this.inferSessionId(runId);
+    if (!sid) return;
+    const run = this.active.get(runId);
+    if (!run) return;
+    (run as ActiveRun & { sessionId?: string }).sessionId = sid;
+    this.options.store.updateRunSessionId(runId, sid);
+  }
+
+  private getRunSessionId(runId: string): string | undefined {
+    const run = this.active.get(runId);
+    const sid =
+      (run as (ActiveRun & { sessionId?: string }) | undefined)?.sessionId ??
+      undefined;
+    if (sid) return sid;
+    const inferred = this.inferSessionId(runId);
+    if (inferred) return inferred;
+    return this.options.store.getRun(runId)?.session_id;
+  }
+
+  private inferSessionId(runId: string): string | undefined {
+    const run = this.active.get(runId);
+    if (!run) return undefined;
+    const record = this.options.store.getRun(runId);
+    if (!record || record.session_id) return record?.session_id;
+    const snapshot =
+      (run as ActiveRun & { sessionSnapshot?: Map<string, number> })
+        .sessionSnapshot ?? new Map<string, number>();
+    const inferred = newestCreatedSessionId(
+      this.sessionDirsFor(record.working_directory),
+      snapshot,
+      run.startedAtMs,
+    );
+    if (!inferred) return undefined;
+    (run as ActiveRun & { sessionId?: string }).sessionId = inferred;
+    this.options.store.updateRunSessionId(runId, inferred);
+    return inferred;
+  }
+
+  private sessionDirsFor(cwd: string): string[] {
+    const root =
+      this.options.piSessionDir ??
+      process.env.PI_CODING_AGENT_SESSION_DIR ??
+      path.join(
+        process.env.PI_CODING_AGENT_DIR ??
+          path.join(process.env.HOME ?? "", ".pi", "agent"),
+        "sessions",
+      );
+    const projectKey = sessionProjectKey(cwd);
+    return [path.join(root, projectKey), root];
   }
 
   private killRun(run: ActiveRun, signal: NodeJS.Signals): void {
@@ -436,4 +538,69 @@ function textFromContent(content: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractSessionId(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const sid = data.session_id ?? data.sessionId ?? data.session ?? undefined;
+  return typeof sid === "string" && sid.length > 0 ? sid : undefined;
+}
+
+function sessionProjectKey(cwd: string): string {
+  const normalized = path.resolve(cwd).split(path.sep).filter(Boolean).join("-");
+  return `--${normalized}--`;
+}
+
+function snapshotSessionFiles(dirs: string[]): Map<string, number> {
+  const snapshot = new Map<string, number>();
+  for (const dir of dirs) {
+    for (const file of sessionFiles(dir)) {
+      snapshot.set(file.path, file.mtimeMs);
+    }
+  }
+  return snapshot;
+}
+
+function newestCreatedSessionId(
+  dirs: string[],
+  snapshot: Map<string, number>,
+  startedAtMs: number,
+): string | undefined {
+  let best: { sessionId: string; mtimeMs: number } | undefined;
+  for (const dir of dirs) {
+    for (const file of sessionFiles(dir)) {
+      const previousMtime = snapshot.get(file.path);
+      if (previousMtime !== undefined && previousMtime === file.mtimeMs) {
+        continue;
+      }
+      if (file.mtimeMs < startedAtMs - 1000) continue;
+      const sessionId = sessionIdFromPath(file.path);
+      if (!sessionId) continue;
+      if (!best || file.mtimeMs > best.mtimeMs) {
+        best = { sessionId, mtimeMs: file.mtimeMs };
+      }
+    }
+  }
+  return best?.sessionId;
+}
+
+function sessionFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => {
+        const filePath = path.join(dir, entry.name);
+        return { path: filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+      });
+  } catch {
+    return [];
+  }
+}
+
+function sessionIdFromPath(filePath: string): string | undefined {
+  const match = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
+    path.basename(filePath),
+  );
+  return match?.[1];
 }

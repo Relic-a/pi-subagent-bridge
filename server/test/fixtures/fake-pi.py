@@ -5,12 +5,47 @@ import sys
 import threading
 import time
 
+# Parse command-line arguments for session continuation.
+_session_id = None
+args = sys.argv[1:]
+try:
+    idx = args.index("--session-id")
+    _session_id = args[idx + 1]
+except (ValueError, IndexError):
+    try:
+        idx = args.index("--session")
+        _session_id = args[idx + 1]
+    except (ValueError, IndexError):
+        pass
+
+args_file = os.environ.get("FAKE_PI_ARGS_FILE")
+if args_file:
+    with open(args_file, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(args) + "\n")
+
+session_id = _session_id if _session_id else f"session-{os.getpid()}-{int(time.time() * 1000)}"
+if not _session_id and os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") == "1":
+    session_id = "019ebd7c-ff7f-7d72-a11d-81e5d8d4d87c"
+_session_emitted = False
+
 aborted = False
 active_timer = None
 
 
 def emit(value):
     print(json.dumps(value), flush=True)
+
+
+def maybe_write_session_file():
+    session_dir = os.environ.get("FAKE_PI_SESSION_DIR")
+    if not session_dir:
+        return
+    project = "--" + os.getcwd().strip(os.sep).replace(os.sep, "-") + "--"
+    project_dir = os.path.join(session_dir, project)
+    os.makedirs(project_dir, exist_ok=True)
+    file_name = f"2026-06-12T20-00-00-000Z_{session_id}.jsonl"
+    with open(os.path.join(project_dir, file_name), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "message"}) + "\n")
 
 
 def agent_end_later(delay):
@@ -82,13 +117,34 @@ def handle(message):
         return
 
     if message.get("type") == "prompt":
+        global _session_emitted
         text = message.get("message", "")
+        maybe_write_session_file()
+        if (
+            os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") != "1"
+            and not _session_emitted
+            and message.get("session_signal") != "suppressed"
+        ):
+            was_resumed = _session_id is not None
+            emit(
+                {
+                    "event": "session_started" if was_resumed else "session_created",
+                    "params": {
+                        "session_id": session_id,
+                        "resumed": was_resumed,
+                    },
+                }
+            )
+            _session_emitted = True
         emit(
             {
                 "type": "response",
                 "command": "prompt",
                 "id": message.get("id"),
                 "success": True,
+                "data": {}
+                if os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") == "1"
+                else {"session_id": session_id},
             }
         )
         if "crash" in text:

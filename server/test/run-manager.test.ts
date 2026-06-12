@@ -26,6 +26,7 @@ function makeManager(
     stopGraceMs: 50,
     startMethod: "prompt",
     abortMethod: "abort",
+    sessionIdFlag: "--session-id",
     ...overrides,
   });
   if (extraEnv) Object.assign(process.env, extraEnv);
@@ -43,6 +44,9 @@ describe("RunManager", () => {
     fs.rmSync(tmp, { recursive: true, force: true });
     delete process.env.FAKE_PI_IGNORE_ABORT;
     delete process.env.FAKE_PI_ABORT_FILE;
+    delete process.env.FAKE_PI_ARGS_FILE;
+    delete process.env.FAKE_PI_SESSION_DIR;
+    delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
   });
 
   it("returns from start before fake agent completes and wait resolves on agent_end", async () => {
@@ -152,6 +156,7 @@ describe("RunManager", () => {
       stopGraceMs: 20,
       startMethod: "prompt",
       abortMethod: "abort",
+      sessionIdFlag: "--session-id",
     });
     const first = await manager.start({
       task: "never one",
@@ -164,6 +169,94 @@ describe("RunManager", () => {
       "state",
       "timed_out",
     );
+  });
+
+  it("exposes session_id in diagnostics and results when run without explicit session", async () => {
+    const started = await manager.start({
+      task: "session test",
+      working_directory: tmp,
+    });
+    // Wait for the prompt request to resolve so session_id is captured
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const diag = manager.getRun(started.run_id);
+    expect(diag.session_id).toBeDefined();
+    expect(typeof diag.session_id).toBe("string");
+    const result = await manager.wait(started.run_id);
+    expect(result.session_id).toBe(diag.session_id);
+    expect(result.session_id?.startsWith("session-")).toBe(true);
+  });
+
+  it("infers Pi's real session_id from the session file when RPC omits it", async () => {
+    const sessionDir = path.join(tmp, "sessions");
+    process.env.FAKE_PI_SESSION_DIR = sessionDir;
+    process.env.FAKE_PI_SUPPRESS_SESSION_RPC = "1";
+    await manager.shutdown();
+    makeManager(undefined, { piSessionDir: sessionDir });
+
+    const started = await manager.start({
+      task: "session file only",
+      working_directory: tmp,
+    });
+
+    const result = await manager.wait(started.run_id);
+    expect(result.session_id).toBe("019ebd7c-ff7f-7d72-a11d-81e5d8d4d87c");
+    expect(manager.getRun(started.run_id).session_id).toBe(result.session_id);
+    expect(manager.readResult(started.run_id).session_id).toBe(
+      result.session_id,
+    );
+  });
+
+  it("starts new runs without disabling Pi session persistence", async () => {
+    const argsFile = path.join(tmp, "args.jsonl");
+    process.env.FAKE_PI_ARGS_FILE = argsFile;
+    const { run_id } = await manager.start({
+      task: "new persisted session",
+      working_directory: tmp,
+    });
+    await manager.wait(run_id);
+
+    const [args] = fs
+      .readFileSync(argsFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(args).not.toContain("--no-session");
+    expect(args).not.toContain("--session-id");
+  });
+
+  it("accepts and returns an explicit session_id", async () => {
+    const started = await manager.start({
+      task: "explicit session",
+      working_directory: tmp,
+      session_id: "my-custom-session",
+    });
+    const result = await manager.wait(started.run_id);
+    expect(result.session_id).toBe("my-custom-session");
+    const diag = manager.getRun(started.run_id);
+    expect(diag.session_id).toBe("my-custom-session");
+    expect(manager.readResult(started.run_id).session_id).toBe(
+      "my-custom-session",
+    );
+  });
+
+  it("continues explicit sessions with Pi's exact session-id flag", async () => {
+    const argsFile = path.join(tmp, "resume-args.jsonl");
+    process.env.FAKE_PI_ARGS_FILE = argsFile;
+    const { run_id } = await manager.start({
+      task: "explicit session args",
+      working_directory: tmp,
+      session_id: "my-custom-session",
+    });
+    await manager.wait(run_id);
+
+    const [args] = fs
+      .readFileSync(argsFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    expect(args).toContain("--session-id");
+    expect(args).toContain("my-custom-session");
+    expect(args).not.toContain("--no-session");
   });
 
   it("rejects invalid working directories and path traversal", async () => {

@@ -1,16 +1,20 @@
 # Pi Subagent Bridge
 
-Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing isolated Pi coding-agent subprocesses.
+Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
 ## What It Provides
 
 - `pi_list_models`: searches Pi's structured RPC model catalog. Pass `query` for focused selection such as `gpt 5.5 reasoning`; the server does not scrape terminal-formatted output.
-- `pi_start`: starts one `pi --mode rpc --no-session` subprocess per run and returns a stable `run_id` immediately.
-- `pi_wait`: awaits the terminal `agent_end` event once and returns `completed`, `failed`, `stopped`, or `timed_out`.
+- `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session.
+- `pi_wait`: awaits the terminal `agent_end` event once and returns `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id`.
 - `pi_stop`: sends Pi's RPC abort command, waits for the grace period, then terminates the child process group if needed.
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
-- `pi_get_run`: diagnostic state for recovery and debugging.
-- `pi_read_result`: reads an already completed result after an interrupted wait connection.
+- `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.
+- `pi_read_result`: reads an already completed result after an interrupted wait connection, including any Pi `session_id`.
+
+## Session Continuation
+
+`pi_start` accepts an optional `session_id`. When omitted, Pi creates a normal persistent session. The bridge captures session ids from Pi RPC responses/events and returns them from `pi_wait`, `pi_read_result`, and `pi_get_run`. Pass that value as `session_id` on a later `pi_start` to continue the same Pi conversation.
 
 ## Installation For Users
 
@@ -55,7 +59,9 @@ npm run build
 Environment variables:
 
 - `PI_EXECUTABLE`: Pi executable path. Default: `pi`.
-- `PI_RPC_ARGS`: override Pi RPC args. Default: `--mode rpc --no-session`.
+- `PI_RPC_ARGS`: override Pi RPC args. Default: `--mode rpc`.
+- `PI_RPC_SESSION_ID_FLAG`: flag used when `pi_start.session_id` is provided. Default: `--session-id`.
+- `PI_RPC_NO_SESSION_FLAG`: optional flag to append for starts without `session_id`. Leave unset for persistent Pi sessions; set to `--no-session` to force ephemeral sessions.
 - `PI_RPC_MODEL_LIST_METHOD`: default `get_available_models`.
 - `PI_RPC_START_METHOD`: default `prompt`.
 - `PI_RPC_ABORT_METHOD`: default `abort`.
@@ -76,7 +82,7 @@ npm run typecheck
 npm test
 ```
 
-Tests use `server/test/fixtures/fake-pi.mjs`, a deterministic JSONL executable that mimics Pi RPC behavior.
+Tests use `server/test/fixtures/fake-pi.py`, a deterministic JSONL executable that mimics Pi RPC behavior.
 
 ## Security Notes
 
