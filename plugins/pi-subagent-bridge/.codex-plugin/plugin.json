@@ -1,0 +1,26 @@
+{
+  "name": "pi-subagent-bridge",
+  "version": "0.1.0+codex.20260612174611",
+  "description": "Manage isolated Pi coding-agent subprocesses from Codex through a local MCP server.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Pi Subagent Bridge",
+    "shortDescription": "Run Pi coding sub-agents from Codex.",
+    "longDescription": "Adds a local MCP server that lets Codex list Pi models, start isolated Pi RPC subprocesses, wait for terminal results, stop runs, and inspect sanitized tool-call starts.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Delegate this task to a Pi sub-agent.",
+      "Start a Pi run and wait once for the answer.",
+      "Inspect recent Pi tool calls."
+    ]
+  }
+}

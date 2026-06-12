@@ -1,0 +1,20 @@
+{
+  "name": "pi-subagent-bridge-local",
+  "interface": {
+    "displayName": "Pi Subagent Bridge Local"
+  },
+  "plugins": [
+    {
+      "name": "pi-subagent-bridge",
+      "source": {
+        "source": "local",
+        "path": "./plugins/pi-subagent-bridge"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
