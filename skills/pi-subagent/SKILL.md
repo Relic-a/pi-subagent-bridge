@@ -17,6 +17,9 @@ Use this skill when the user asks Codex to delegate coding work to Pi, compare P
 - Call `pi_wait` exactly once for the returned `run_id`. Do not poll with repeated waits.
 - Use `pi_read_result` only when the original wait connection was interrupted after the Pi run completed.
 - Use `pi_get_run` for diagnostics and recovery only. It also exposes the `session_id` for the run.
+- Prefer the default `workspace_mode` of `auto`; git repositories run in isolated worktrees so Pi can edit independently from Codex.
+- When a result includes `workspace`, inspect changes through `workspace.status_command`, `workspace.diff_command`, `workspace.patch_path`, or the listed `changed_files`. Do not request or paste the full patch into model context unless the task specifically needs it.
+- Integrate Pi work deliberately from the primary checkout by applying `workspace.patch_path`, merging `workspace.branch`, or manually porting selected files.
 - Use `pi_stop` only when the user explicitly asks to cancel a Pi run.
 - Use `pi_recent_tool_calls` for occasional inspection of current activity. Never use it as a status-polling loop.
 

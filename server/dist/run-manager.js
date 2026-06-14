@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { PiRpcClient } from "./pi-rpc-client.js";
@@ -31,6 +32,8 @@ export class RunManager {
         }
         const cwd = this.validateWorkingDirectory(input.working_directory);
         const runId = crypto.randomUUID();
+        const workspace = this.prepareWorkspace(cwd, runId, input.workspace_mode);
+        const agentCwd = workspace.agent_working_directory;
         const now = new Date().toISOString();
         let resolveOnce;
         const waitPromise = new Promise((resolve) => {
@@ -45,11 +48,11 @@ export class RunManager {
         const sessionId = input.session_id;
         const sessionSnapshot = sessionId
             ? undefined
-            : snapshotSessionFiles(this.sessionDirsFor(cwd));
+            : snapshotSessionFiles(this.sessionDirsFor(agentCwd));
         const client = new PiRpcClient({
             executable: this.options.piExecutable,
             args: this.argsFor(input),
-            cwd,
+            cwd: agentCwd,
             onEvent: (event) => this.handleEvent(runId, event),
             onExit: (code, signal) => this.handleExit(runId, code, signal),
             onMalformedLine: (line) => {
@@ -81,6 +84,7 @@ export class RunManager {
             model_id: input.model_id,
             thinking_level: input.thinking_level,
             session_id: sessionId,
+            workspace,
         });
         run.timeoutTimer = setTimeout(() => {
             this.transition(runId, "timed_out", {
@@ -93,12 +97,13 @@ export class RunManager {
                 final_answer: "",
                 error: "Maximum runtime exceeded.",
                 session_id: this.getRunSessionId(runId),
+                workspace: this.finalizeWorkspace(runId),
             });
             this.active.delete(runId);
         }, this.options.maxRuntimeMs);
         client
             .request(this.options.startMethod, {
-            message: input.task,
+            message: this.messageForAgent(input.task, workspace),
         })
             .then((data) => {
             this.captureSessionId(runId, data);
@@ -110,7 +115,7 @@ export class RunManager {
                 return;
             this.failRun(runId, `Pi start failed: ${error.message}`);
         });
-        return { run_id: runId, session_id: sessionId };
+        return { run_id: runId, session_id: sessionId, workspace };
     }
     wait(runId) {
         const active = this.active.get(runId);
@@ -127,6 +132,7 @@ export class RunManager {
             final_answer: record.final_answer ?? "",
             error: record.error,
             session_id: record.session_id,
+            workspace: record.workspace,
         });
     }
     async stop(runId) {
@@ -150,6 +156,7 @@ export class RunManager {
                             state: "stopped",
                             final_answer: "",
                             session_id: this.getRunSessionId(runId),
+                            workspace: this.finalizeWorkspace(runId),
                         });
                         this.cleanup(runId);
                     }
@@ -174,6 +181,7 @@ export class RunManager {
             session_id: record.session_id,
             error: record.error,
             has_result: Boolean(record.final_answer),
+            workspace: record.workspace,
         };
     }
     readResult(runId) {
@@ -188,6 +196,7 @@ export class RunManager {
             final_answer: record.final_answer ?? "",
             error: record.error,
             session_id: record.session_id,
+            workspace: record.workspace,
         };
     }
     recentToolCalls(limit, runId) {
@@ -206,6 +215,7 @@ export class RunManager {
                 state: "stopped",
                 final_answer: "",
                 session_id: this.getRunSessionId(run.run_id),
+                workspace: this.finalizeWorkspace(run.run_id),
             });
             this.cleanup(run.run_id);
         }
@@ -266,6 +276,7 @@ export class RunManager {
                     ? String(params.error ?? "Pi run failed.")
                     : undefined,
                 session_id: sessionId,
+                workspace: this.finalizeWorkspace(runId),
             });
             if (active)
                 this.killRun(active, "SIGTERM");
@@ -286,6 +297,7 @@ export class RunManager {
                 state: "stopped",
                 final_answer: "",
                 session_id: sessionId,
+                workspace: this.finalizeWorkspace(runId),
             });
         }
         else {
@@ -298,6 +310,7 @@ export class RunManager {
                 final_answer: "",
                 error: `Pi process exited unexpectedly: code=${code} signal=${signal}`,
                 session_id: sessionId,
+                workspace: this.finalizeWorkspace(runId),
             });
         }
         this.cleanup(runId);
@@ -316,6 +329,7 @@ export class RunManager {
             final_answer: "",
             error,
             session_id: sessionId,
+            workspace: this.finalizeWorkspace(runId),
         });
         this.cleanup(runId);
     }
@@ -354,6 +368,157 @@ export class RunManager {
         if (!stat.isDirectory())
             throw new Error("working_directory must be an existing directory.");
         return resolved;
+    }
+    prepareWorkspace(cwd, runId, mode = "auto") {
+        if (mode === "direct") {
+            return {
+                mode: "direct",
+                original_working_directory: cwd,
+                agent_working_directory: cwd,
+            };
+        }
+        const git = this.gitContext(cwd);
+        if (!git) {
+            if (mode === "worktree") {
+                throw new Error("workspace_mode=worktree requires a git working tree.");
+            }
+            return {
+                mode: "direct",
+                original_working_directory: cwd,
+                agent_working_directory: cwd,
+                setup_error: "No git working tree found; using direct workspace.",
+            };
+        }
+        const runSlug = runId.slice(0, 8);
+        const worktreeRootName = this.options.worktreeRootName ??
+            process.env.PI_BRIDGE_WORKTREE_ROOT_NAME ??
+            ".pi-subagent-runs";
+        const worktreesRoot = path.join(git.repoRoot, worktreeRootName);
+        const worktreePath = path.join(worktreesRoot, runId);
+        const artifactsDir = path.join(worktreePath, ".pi-bridge");
+        const branch = `pi/run-${runSlug}`;
+        fs.mkdirSync(worktreesRoot, { recursive: true });
+        this.git(git.repoRoot, [
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            worktreePath,
+            git.baseCommit,
+        ]);
+        fs.mkdirSync(artifactsDir, { recursive: true });
+        const relativeCwd = path.relative(git.repoRoot, cwd);
+        const agentCwd = path.join(worktreePath, relativeCwd);
+        const patchPath = path.join(artifactsDir, "changes.patch");
+        return {
+            mode: "worktree",
+            original_working_directory: cwd,
+            agent_working_directory: agentCwd,
+            repo_root: git.repoRoot,
+            worktree_path: worktreePath,
+            branch,
+            base_commit: git.baseCommit,
+            target_commit: this.git(git.repoRoot, ["rev-parse", "HEAD"]).trim(),
+            artifacts_dir: artifactsDir,
+            status_path: path.join(artifactsDir, "status.txt"),
+            patch_path: patchPath,
+            metadata_path: path.join(artifactsDir, "workspace.json"),
+            status_command: `git -C ${quoteShell(worktreePath)} status --short`,
+            diff_command: `git -C ${quoteShell(worktreePath)} diff ${git.baseCommit} --`,
+            apply_command: `git -C ${quoteShell(git.repoRoot)} apply ${quoteShell(patchPath)}`,
+            merge_command: `git -C ${quoteShell(git.repoRoot)} merge --no-ff ${quoteShell(branch)}`,
+        };
+    }
+    messageForAgent(task, workspace) {
+        if (workspace.mode !== "worktree")
+            return task;
+        return `${task}
+
+Bridge workspace note: you are running in an isolated git worktree at ${workspace.agent_working_directory}. Make code changes in files. In your final answer, summarize the work and tests only; do not paste full diffs or patches. The coordinator will inspect changes with git using the branch, worktree, and patch artifacts returned by the bridge.`;
+    }
+    finalizeWorkspace(runId) {
+        const record = this.options.store.getRun(runId);
+        const workspace = record?.workspace;
+        if (!workspace ||
+            workspace.mode !== "worktree" ||
+            !workspace.worktree_path) {
+            return workspace;
+        }
+        const finalized = { ...workspace };
+        try {
+            const status = this.git(workspace.worktree_path, [
+                "status",
+                "--porcelain=v1",
+            ]);
+            finalized.has_changes = status.trim().length > 0;
+            finalized.untracked_files = parseUntrackedFiles(status);
+            if (workspace.status_path) {
+                fs.writeFileSync(workspace.status_path, status, "utf8");
+            }
+            if (status.trim()) {
+                this.git(workspace.worktree_path, ["add", "-N", "."]);
+            }
+            if (workspace.patch_path && workspace.base_commit) {
+                const patch = this.git(workspace.worktree_path, [
+                    "diff",
+                    "--binary",
+                    workspace.base_commit,
+                    "--",
+                ]);
+                fs.writeFileSync(workspace.patch_path, patch, "utf8");
+            }
+            if (workspace.base_commit) {
+                finalized.changed_files = this.git(workspace.worktree_path, [
+                    "diff",
+                    "--name-only",
+                    workspace.base_commit,
+                    "--",
+                ])
+                    .split("\n")
+                    .map((entry) => entry.trim())
+                    .filter(Boolean);
+            }
+            if (workspace.repo_root) {
+                finalized.target_commit = this.git(workspace.repo_root, [
+                    "rev-parse",
+                    "HEAD",
+                ]).trim();
+            }
+            if (workspace.metadata_path) {
+                fs.writeFileSync(workspace.metadata_path, JSON.stringify(finalized, null, 2), "utf8");
+            }
+            this.options.store.updateRunWorkspace(runId, finalized);
+            return finalized;
+        }
+        catch (error) {
+            finalized.setup_error =
+                error instanceof Error ? error.message : String(error);
+            this.options.store.updateRunWorkspace(runId, finalized);
+            return finalized;
+        }
+    }
+    gitContext(cwd) {
+        try {
+            const repoRoot = this.git(cwd, ["rev-parse", "--show-toplevel"]).trim();
+            const inside = this.git(cwd, [
+                "rev-parse",
+                "--is-inside-work-tree",
+            ]).trim();
+            if (inside !== "true")
+                return undefined;
+            const baseCommit = this.git(repoRoot, ["rev-parse", "HEAD"]).trim();
+            return { repoRoot, baseCommit };
+        }
+        catch {
+            return undefined;
+        }
+    }
+    git(cwd, args) {
+        return execFileSync("git", args, {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+        });
     }
     clientFor(run) {
         return run.client;
@@ -406,7 +571,7 @@ export class RunManager {
             return record?.session_id;
         const snapshot = run
             .sessionSnapshot ?? new Map();
-        const inferred = newestCreatedSessionId(this.sessionDirsFor(record.working_directory), snapshot, run.startedAtMs);
+        const inferred = newestCreatedSessionId(this.sessionDirsFor(record.workspace?.agent_working_directory ?? record.working_directory), snapshot, run.startedAtMs);
         if (!inferred)
             return undefined;
         run.sessionId = inferred;
@@ -536,4 +701,14 @@ function sessionFiles(dir) {
 function sessionIdFromPath(filePath) {
     const match = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(path.basename(filePath));
     return match?.[1];
+}
+function parseUntrackedFiles(status) {
+    return status
+        .split("\n")
+        .filter((line) => line.startsWith("?? "))
+        .map((line) => line.slice(3).trim())
+        .filter(Boolean);
+}
+function quoteShell(value) {
+    return `'${value.replace(/'/g, "'\\''")}'`;
 }

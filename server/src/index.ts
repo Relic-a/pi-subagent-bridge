@@ -19,6 +19,7 @@ const StartSchema = z.object({
   model_id: z.string().optional(),
   thinking_level: z.string().optional(),
   session_id: z.string().optional(),
+  workspace_mode: z.enum(["auto", "worktree", "direct"]).optional(),
 });
 const RunIdSchema = z.object({ run_id: z.string().uuid() });
 const RecentSchema = z.object({
@@ -45,6 +46,7 @@ const manager = new RunManager({
   stopGraceMs: envInt("PI_BRIDGE_STOP_GRACE_MS", 5000),
   startMethod: process.env.PI_RPC_START_METHOD ?? "prompt",
   abortMethod: process.env.PI_RPC_ABORT_METHOD ?? "abort",
+  worktreeRootName: process.env.PI_BRIDGE_WORKTREE_ROOT_NAME,
   sessionIdFlag: process.env.PI_RPC_SESSION_ID_FLAG ?? "--session-id",
   noSessionFlag: process.env.PI_RPC_NO_SESSION_FLAG,
 });
@@ -98,6 +100,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description:
               "Optional Pi session ID to continue. When absent Pi creates a new persistent session and returns its ID in diagnostics and results.",
+          },
+          workspace_mode: {
+            type: "string",
+            enum: ["auto", "worktree", "direct"],
+            description:
+              "Workspace isolation mode. Default auto uses an isolated git worktree when working_directory is in a git repo and returns compact diff/status references instead of inline patches.",
           },
         },
         additionalProperties: false,

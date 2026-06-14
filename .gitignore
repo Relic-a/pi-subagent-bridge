@@ -8,6 +8,7 @@ coverage/
 # Runtime state
 .pi-subagent-bridge/
 **/.pi-subagent-bridge/
+.pi-subagent-runs/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

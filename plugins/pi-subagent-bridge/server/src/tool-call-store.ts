@@ -30,7 +30,8 @@ export class ToolCallStore {
         thinking_level TEXT,
         session_id TEXT,
         error TEXT,
-        final_answer TEXT
+        final_answer TEXT,
+        workspace_json TEXT
       );
       CREATE TABLE IF NOT EXISTS tool_calls (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +43,15 @@ export class ToolCallStore {
       );
     `);
     this.ensureColumn("runs", "session_id", "TEXT");
+    this.ensureColumn("runs", "workspace_json", "TEXT");
   }
 
   createRun(record: Omit<RunRecord, "has_result">): void {
     this.db
       .prepare(
         `INSERT INTO runs
-        (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, session_id, error, final_answer)
-        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer)`,
+        (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, session_id, error, final_answer, workspace_json)
+        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer, @workspace_json)`,
       )
       .run(normalizeRecord(record));
     this.pruneRuns();
@@ -82,6 +84,17 @@ export class ToolCallStore {
         `UPDATE runs SET session_id = COALESCE(@session_id, session_id) WHERE run_id = @run_id`,
       )
       .run({ run_id: runId, session_id: sessionId });
+  }
+
+  updateRunWorkspace(runId: string, workspace: RunRecord["workspace"]): void {
+    this.db
+      .prepare(
+        "UPDATE runs SET workspace_json = @workspace_json WHERE run_id = @run_id",
+      )
+      .run({
+        run_id: runId,
+        workspace_json: workspace ? JSON.stringify(workspace) : null,
+      });
   }
 
   getRun(runId: string): RunRecord | undefined {
@@ -178,6 +191,7 @@ interface DbRun {
   session_id: string | null;
   error: string | null;
   final_answer: string | null;
+  workspace_json: string | null;
 }
 
 interface DbToolCall {
@@ -200,6 +214,7 @@ function normalizeRecord(
     session_id: record.session_id ?? null,
     error: record.error ?? null,
     final_answer: record.final_answer ?? null,
+    workspace_json: record.workspace ? JSON.stringify(record.workspace) : null,
   };
 }
 
@@ -218,5 +233,8 @@ function mapRun(row: DbRun): RunRecord {
     error: row.error ?? undefined,
     final_answer: row.final_answer ?? undefined,
     has_result: row.final_answer != null,
+    workspace: row.workspace_json
+      ? (JSON.parse(row.workspace_json) as RunRecord["workspace"])
+      : undefined,
   };
 }

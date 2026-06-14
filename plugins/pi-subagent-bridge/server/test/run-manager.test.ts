@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,24 @@ const fakePi = fileURLToPath(new URL("./fixtures/fake-pi.py", import.meta.url));
 let tmp: string;
 let store: ToolCallStore;
 let manager: RunManager;
+
+function execGit(cwd: string, args: string[]) {
+  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+async function waitForReadableResult(runId: string, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      return manager.readResult(runId);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw lastError;
+}
 
 function makeManager(
   extraEnv?: NodeJS.ProcessEnv,
@@ -83,8 +102,7 @@ describe("RunManager", () => {
       working_directory: tmp,
     });
     void manager.wait(run_id);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(manager.readResult(run_id).state).toBe("completed");
+    expect((await waitForReadableResult(run_id)).state).toBe("completed");
   });
 
   it("duplicate stop calls are idempotent", async () => {
@@ -237,6 +255,50 @@ describe("RunManager", () => {
       .map((line) => JSON.parse(line) as string[]);
     expect(args).not.toContain("--no-session");
     expect(args).not.toContain("--session-id");
+  });
+
+  it("isolates git-backed runs in worktrees and returns compact change references", async () => {
+    fs.writeFileSync(path.join(tmp, "tracked.txt"), "base\n");
+    execGit(tmp, ["init"]);
+    execGit(tmp, ["add", "tracked.txt"]);
+    execGit(tmp, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "base",
+    ]);
+
+    const started = await manager.start({
+      task: "write workspace files",
+      working_directory: tmp,
+    });
+    expect(started.workspace.mode).toBe("worktree");
+    expect(started.workspace.agent_working_directory).not.toBe(tmp);
+
+    const result = await manager.wait(started.run_id);
+
+    expect(fs.readFileSync(path.join(tmp, "tracked.txt"), "utf8")).toBe(
+      "base\n",
+    );
+    expect(fs.existsSync(path.join(tmp, "new-file.txt"))).toBe(false);
+    expect(result.workspace?.mode).toBe("worktree");
+    expect(result.workspace?.has_changes).toBe(true);
+    expect(result.workspace?.changed_files).toEqual(
+      expect.arrayContaining(["tracked.txt", "new-file.txt"]),
+    );
+    expect(result.workspace?.untracked_files).toEqual(["new-file.txt"]);
+    expect(result.workspace?.patch_path).toBeDefined();
+    expect(result.workspace?.diff_command).toContain("git -C");
+    expect(result.workspace?.diff_command).not.toContain("pi edit");
+    expect(fs.readFileSync(result.workspace!.status_path!, "utf8")).toContain(
+      "tracked.txt",
+    );
+    expect(fs.readFileSync(result.workspace!.patch_path!, "utf8")).toContain(
+      "pi edit",
+    );
   });
 
   it("accepts and returns an explicit session_id", async () => {

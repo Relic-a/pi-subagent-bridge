@@ -5,8 +5,8 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 ## What It Provides
 
 - `pi_list_models`: searches Pi's structured RPC model catalog. Pass `query` for focused selection such as `gpt 5.5 reasoning`; the server does not scrape terminal-formatted output.
-- `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session.
-- `pi_wait`: awaits the terminal `agent_end` event once and returns `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id`.
+- `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session. By default, git-backed workspaces run in an isolated `git worktree`.
+- `pi_wait`: awaits the terminal `agent_end` event once and returns `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id` and compact workspace change references.
 - `pi_stop`: sends Pi's RPC abort command, waits for the grace period, then terminates the child process group if needed.
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
 - `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.
@@ -15,6 +15,24 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 ## Session Continuation
 
 `pi_start` accepts an optional `session_id`. When omitted, Pi creates a normal persistent session. The bridge captures session ids from Pi RPC responses/events and returns them from `pi_wait`, `pi_read_result`, and `pi_get_run`. Pass that value as `session_id` on a later `pi_start` to continue the same Pi conversation.
+
+## Workspace Isolation
+
+`pi_start` accepts `workspace_mode`:
+
+- `auto` (default): if `working_directory` is inside a git repo, create an isolated worktree at `<repo>/.pi-subagent-runs/<run_id>` on branch `pi/run-<short-id>`. Outside git repos, run directly in `working_directory`.
+- `worktree`: require git worktree isolation and fail if `working_directory` is not in a git repo.
+- `direct`: run in `working_directory`.
+
+Worktree results do not inline full diffs into MCP responses. Instead, `pi_start`, `pi_wait`, `pi_get_run`, and `pi_read_result` return compact `workspace` metadata with paths and commands:
+
+- `agent_working_directory`: where Pi actually ran.
+- `branch`, `base_commit`, `target_commit`, and `worktree_path`.
+- `changed_files`, `untracked_files`, and `has_changes`.
+- `status_path`, `patch_path`, and `metadata_path` under `.pi-bridge/` in the worktree.
+- `status_command`, `diff_command`, `apply_command`, and `merge_command`.
+
+This lets the coordinating Codex inspect changes with normal git commands, or apply the generated patch, without loading every changed line into the context window. Worktrees start from `HEAD`; uncommitted changes in the original checkout remain isolated in the original checkout.
 
 ## Installation For Users
 
@@ -66,6 +84,7 @@ Environment variables:
 - `PI_RPC_START_METHOD`: default `prompt`.
 - `PI_RPC_ABORT_METHOD`: default `abort`.
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: MCP server cwd.
+- `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
 - `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `.pi-subagent-bridge`.
 - `PI_BRIDGE_MAX_CONCURRENT_RUNS`: default `3`.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.

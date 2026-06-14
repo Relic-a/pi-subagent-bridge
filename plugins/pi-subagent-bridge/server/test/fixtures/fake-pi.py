@@ -169,6 +169,11 @@ def handle(message):
         if "crash" in text:
             threading.Timer(0.02, lambda: os._exit(7)).start()
             return
+        if "write workspace files" in text:
+            with open("tracked.txt", "a", encoding="utf-8") as fh:
+                fh.write("pi edit\n")
+            with open("new-file.txt", "w", encoding="utf-8") as fh:
+                fh.write("new from pi\n")
         emit(
             {
                 "event": "tool_execution_start",

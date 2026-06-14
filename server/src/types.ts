@@ -28,6 +28,30 @@ export interface StartRunInput {
   model_id?: string;
   thinking_level?: string;
   session_id?: string;
+  workspace_mode?: "auto" | "worktree" | "direct";
+}
+
+export interface RunWorkspace {
+  mode: "direct" | "worktree";
+  original_working_directory: string;
+  agent_working_directory: string;
+  repo_root?: string;
+  worktree_path?: string;
+  branch?: string;
+  base_commit?: string;
+  target_commit?: string;
+  artifacts_dir?: string;
+  status_path?: string;
+  patch_path?: string;
+  metadata_path?: string;
+  diff_command?: string;
+  status_command?: string;
+  apply_command?: string;
+  merge_command?: string;
+  changed_files?: string[];
+  untracked_files?: string[];
+  has_changes?: boolean;
+  setup_error?: string;
 }
 
 export interface RunResult {
@@ -36,6 +60,7 @@ export interface RunResult {
   final_answer: string;
   error?: string;
   session_id?: string;
+  workspace?: RunWorkspace;
 }
 
 export interface ToolCallAudit {
@@ -59,6 +84,7 @@ export interface RunDiagnostics {
   session_id?: string;
   error?: string;
   has_result: boolean;
+  workspace?: RunWorkspace;
 }
 
 export interface RunRecord extends RunDiagnostics {
