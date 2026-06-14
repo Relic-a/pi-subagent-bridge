@@ -21,6 +21,7 @@ export interface PiClientOptions {
 export class PiRpcClient {
   readonly child: ChildProcessWithoutNullStreams;
   private nextId = 1;
+  private exited = false;
   private pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -34,6 +35,7 @@ export class PiRpcClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    this.child.stdin.on("error", () => undefined);
     this.child.on("error", (error) => {
       for (const pending of this.pending.values()) {
         pending.reject(error);
@@ -42,6 +44,7 @@ export class PiRpcClient {
       options.onExit?.(null, null);
     });
     this.child.on("exit", (code, signal) => {
+      this.exited = true;
       for (const pending of this.pending.values()) {
         pending.reject(
           new Error(
@@ -61,6 +64,10 @@ export class PiRpcClient {
     const id = String(this.nextId++);
     const payload = { id, type: method, ...(params ?? {}) };
     return new Promise((resolve, reject) => {
+      if (this.exited || !this.child.stdin.writable) {
+        reject(new Error("Pi RPC process is not accepting input."));
+        return;
+      }
       this.pending.set(id, { resolve, reject });
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (error) {
@@ -71,13 +78,19 @@ export class PiRpcClient {
     });
   }
 
-  send(method: string, params?: Record<string, unknown>): void {
-    this.child.stdin.write(
-      `${JSON.stringify({ type: method, ...(params ?? {}) })}\n`,
-    );
+  send(method: string, params?: Record<string, unknown>): boolean {
+    if (this.exited || !this.child.stdin.writable) return false;
+    try {
+      return this.child.stdin.write(
+        `${JSON.stringify({ type: method, ...(params ?? {}) })}\n`,
+      );
+    } catch {
+      return false;
+    }
   }
 
   terminate(signal: NodeJS.Signals = "SIGTERM"): void {
+    if (this.exited) return;
     if (this.child.pid) {
       try {
         process.kill(-this.child.pid, signal);

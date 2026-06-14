@@ -45,6 +45,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_IGNORE_ABORT;
     delete process.env.FAKE_PI_ABORT_FILE;
     delete process.env.FAKE_PI_ARGS_FILE;
+    delete process.env.FAKE_PI_SIGNAL_FILE;
     delete process.env.FAKE_PI_SESSION_DIR;
     delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
   });
@@ -87,27 +88,41 @@ describe("RunManager", () => {
   });
 
   it("duplicate stop calls are idempotent", async () => {
+    await manager.shutdown();
+    makeManager(undefined, { stopGraceMs: 500 });
+    const signalFile = path.join(tmp, "signals.log");
+    process.env.FAKE_PI_SIGNAL_FILE = signalFile;
     const { run_id } = await manager.start({
       task: "never stop",
       working_directory: tmp,
     });
+    const startedAt = Date.now();
     await Promise.all([manager.stop(run_id), manager.stop(run_id)]);
     const result = await manager.wait(run_id);
     expect(result.state).toBe("stopped");
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(fs.readFileSync(signalFile, "utf8")).toContain("SIGTERM");
   });
 
   it("stop escalates after abort grace when Pi ignores abort", async () => {
+    await manager.shutdown();
+    makeManager(undefined, { stopGraceMs: 100 });
     process.env.FAKE_PI_IGNORE_ABORT = "1";
     const abortFile = path.join(tmp, "abort.log");
+    const signalFile = path.join(tmp, "signals.log");
     process.env.FAKE_PI_ABORT_FILE = abortFile;
+    process.env.FAKE_PI_SIGNAL_FILE = signalFile;
     const { run_id } = await manager.start({
       task: "never ignore abort",
       working_directory: tmp,
     });
+    const startedAt = Date.now();
     await manager.stop(run_id);
     const result = await manager.wait(run_id);
     expect(result.state).toBe("stopped");
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
     expect(fs.readFileSync(abortFile, "utf8")).toContain("abort");
+    expect(fs.readFileSync(signalFile, "utf8")).toContain("SIGTERM");
   });
 
   it("server shutdown resolves active children as stopped", async () => {

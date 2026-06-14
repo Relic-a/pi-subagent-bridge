@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -30,6 +31,24 @@ _session_emitted = False
 
 aborted = False
 active_timer = None
+
+
+def record_signal(name):
+    signal_file = os.environ.get("FAKE_PI_SIGNAL_FILE")
+    if not signal_file:
+        return
+    with open(signal_file, "a", encoding="utf-8") as fh:
+        fh.write(name + "\n")
+
+
+def handle_signal(signum, _frame):
+    record_signal(signal.Signals(signum).name)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, handle_signal)
+if hasattr(signal, "SIGHUP"):
+    signal.signal(signal.SIGHUP, handle_signal)
 
 
 def emit(value):

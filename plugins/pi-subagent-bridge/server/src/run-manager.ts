@@ -169,8 +169,7 @@ export class RunManager {
     if (!active.stopRequested) {
       active.stopRequested = true;
       this.transition(runId, "stopping");
-      this.clientFor(active).send(this.options.abortMethod, { run_id: runId });
-      active.abortSent = true;
+      active.abortSent = this.sendAbort(active);
       active.forceTimer = setTimeout(() => {
         this.killRun(active, "SIGTERM");
         setTimeout(() => {
@@ -231,9 +230,7 @@ export class RunManager {
     this.shuttingDown = true;
     const runs = [...this.active.values()];
     for (const run of runs) {
-      this.clientFor(run).send(this.options.abortMethod, {
-        run_id: run.run_id,
-      });
+      this.sendAbort(run);
       this.killRun(run, "SIGTERM");
       this.transition(
         run.run_id,
@@ -499,6 +496,12 @@ export class RunManager {
     this.clientFor(run).terminate(signal);
   }
 
+  private sendAbort(run: ActiveRun): boolean {
+    return this.clientFor(run).send(this.options.abortMethod, {
+      run_id: run.run_id,
+    });
+  }
+
   private cleanup(runId: string): void {
     const run = this.active.get(runId);
     if (!run) return;
@@ -547,7 +550,11 @@ function extractSessionId(data: unknown): string | undefined {
 }
 
 function sessionProjectKey(cwd: string): string {
-  const normalized = path.resolve(cwd).split(path.sep).filter(Boolean).join("-");
+  const normalized = path
+    .resolve(cwd)
+    .split(path.sep)
+    .filter(Boolean)
+    .join("-");
   return `--${normalized}--`;
 }
 
@@ -599,8 +606,9 @@ function sessionFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
 }
 
 function sessionIdFromPath(filePath: string): string | undefined {
-  const match = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
-    path.basename(filePath),
-  );
+  const match =
+    /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(
+      path.basename(filePath),
+    );
   return match?.[1];
 }

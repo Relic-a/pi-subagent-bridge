@@ -138,8 +138,7 @@ export class RunManager {
         if (!active.stopRequested) {
             active.stopRequested = true;
             this.transition(runId, "stopping");
-            this.clientFor(active).send(this.options.abortMethod, { run_id: runId });
-            active.abortSent = true;
+            active.abortSent = this.sendAbort(active);
             active.forceTimer = setTimeout(() => {
                 this.killRun(active, "SIGTERM");
                 setTimeout(() => {
@@ -198,9 +197,7 @@ export class RunManager {
         this.shuttingDown = true;
         const runs = [...this.active.values()];
         for (const run of runs) {
-            this.clientFor(run).send(this.options.abortMethod, {
-                run_id: run.run_id,
-            });
+            this.sendAbort(run);
             this.killRun(run, "SIGTERM");
             this.transition(run.run_id, run.state === "stopping" ? "stopped" : "stopping");
             this.transition(run.run_id, "stopped");
@@ -427,6 +424,11 @@ export class RunManager {
     killRun(run, signal) {
         this.clientFor(run).terminate(signal);
     }
+    sendAbort(run) {
+        return this.clientFor(run).send(this.options.abortMethod, {
+            run_id: run.run_id,
+        });
+    }
     cleanup(runId) {
         const run = this.active.get(runId);
         if (!run)
@@ -481,7 +483,11 @@ function extractSessionId(data) {
     return typeof sid === "string" && sid.length > 0 ? sid : undefined;
 }
 function sessionProjectKey(cwd) {
-    const normalized = path.resolve(cwd).split(path.sep).filter(Boolean).join("-");
+    const normalized = path
+        .resolve(cwd)
+        .split(path.sep)
+        .filter(Boolean)
+        .join("-");
     return `--${normalized}--`;
 }
 function snapshotSessionFiles(dirs) {
