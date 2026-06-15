@@ -147,9 +147,14 @@ export class RunManager {
     return { run_id: runId, session_id: sessionId, workspace };
   }
 
-  wait(runId: string): Promise<RunResult> {
+  wait(runId: string, timeoutMs?: number): Promise<RunResult> {
     const active = this.active.get(runId);
-    if (active) return active.waitPromise;
+    if (active) {
+      if (timeoutMs && timeoutMs > 0) {
+        return this.waitWithProgress(active, timeoutMs);
+      }
+      return active.waitPromise;
+    }
     const record = this.options.store.getRun(runId);
     if (!record) throw new Error(`Unknown run_id: ${runId}`);
     if (!TERMINAL_STATES.has(record.state))
@@ -162,6 +167,41 @@ export class RunManager {
       session_id: record.session_id,
       workspace: record.workspace,
     });
+  }
+
+  private async waitWithProgress(
+    active: ActiveRun,
+    timeoutMs: number,
+  ): Promise<RunResult> {
+    const runId = active.run_id;
+    let progressTimer: NodeJS.Timeout | undefined;
+    try {
+      const result = await Promise.race([
+        active.waitPromise,
+        new Promise<RunResult>((resolve) => {
+          progressTimer = setTimeout(() => {
+            progressTimer = undefined;
+            const toolCallsCount = this.options.store.recentToolCalls(
+              undefined,
+              runId,
+            ).length;
+            resolve({
+              run_id: runId,
+              state: active.state,
+              final_answer: "",
+              session_id: this.getRunSessionId(runId),
+              progress: {
+                elapsed_ms: Date.now() - active.startedAtMs,
+                tool_calls_count: toolCallsCount,
+              },
+            });
+          }, timeoutMs);
+        }),
+      ]);
+      return result;
+    } finally {
+      if (progressTimer) clearTimeout(progressTimer);
+    }
   }
 
   async stop(runId: string): Promise<RunDiagnostics> {

@@ -95,11 +95,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         {
             name: "pi_wait",
-            description: "Wait once for a Pi run's terminal agent_end event. This is not a polling API and request cancellation does not stop the Pi run.",
+            description: "Wait for a Pi run to reach a terminal state. When timeout_ms is set, returns a progress heartbeat before the timeout elapses instead of blocking until completion. This is not a polling API and request cancellation does not stop the Pi run.",
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: {
+                    run_id: { type: "string" },
+                    timeout_ms: {
+                        type: "number",
+                        description: "Maximum milliseconds to wait before returning a progress heartbeat with state, elapsed_ms, and tool_calls_count. Omit to block until the run completes.",
+                    },
+                },
             },
         },
         {
@@ -156,8 +162,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }, ModelsSchema.parse(args ?? {}).query));
             case "pi_start":
                 return jsonResult(await manager.start(StartSchema.parse(args ?? {})));
-            case "pi_wait":
-                return jsonResult(await manager.wait(RunIdSchema.parse(args ?? {}).run_id));
+            case "pi_wait": {
+                const waitArgs = z
+                    .object({ run_id: z.string().uuid(), timeout_ms: z.number().int().min(1).optional() })
+                    .parse(args ?? {});
+                return jsonResult(await manager.wait(waitArgs.run_id, waitArgs.timeout_ms));
+            }
             case "pi_stop":
                 return jsonResult(await manager.stop(RunIdSchema.parse(args ?? {}).run_id));
             case "pi_recent_tool_calls": {

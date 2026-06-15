@@ -114,10 +114,14 @@ export class RunManager {
         });
         return { run_id: runId, session_id: sessionId, workspace };
     }
-    wait(runId) {
+    wait(runId, timeoutMs) {
         const active = this.active.get(runId);
-        if (active)
+        if (active) {
+            if (timeoutMs && timeoutMs > 0) {
+                return this.waitWithProgress(active, timeoutMs);
+            }
             return active.waitPromise;
+        }
         const record = this.options.store.getRun(runId);
         if (!record)
             throw new Error(`Unknown run_id: ${runId}`);
@@ -131,6 +135,36 @@ export class RunManager {
             session_id: record.session_id,
             workspace: record.workspace,
         });
+    }
+    async waitWithProgress(active, timeoutMs) {
+        const runId = active.run_id;
+        let progressTimer;
+        try {
+            const result = await Promise.race([
+                active.waitPromise,
+                new Promise((resolve) => {
+                    progressTimer = setTimeout(() => {
+                        progressTimer = undefined;
+                        const toolCallsCount = this.options.store.recentToolCalls(undefined, runId).length;
+                        resolve({
+                            run_id: runId,
+                            state: active.state,
+                            final_answer: "",
+                            session_id: this.getRunSessionId(runId),
+                            progress: {
+                                elapsed_ms: Date.now() - active.startedAtMs,
+                                tool_calls_count: toolCallsCount,
+                            },
+                        });
+                    }, timeoutMs);
+                }),
+            ]);
+            return result;
+        }
+        finally {
+            if (progressTimer)
+                clearTimeout(progressTimer);
+        }
     }
     async stop(runId) {
         const active = this.active.get(runId);

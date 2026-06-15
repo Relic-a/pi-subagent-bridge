@@ -6,7 +6,7 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 
 - `pi_list_models`: searches Pi's structured RPC model catalog. Pass `query` for focused selection such as `gpt 5.5 reasoning`; the server does not scrape terminal-formatted output.
 - `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session. By default, git-backed workspaces run in an isolated `git worktree`.
-- `pi_wait`: awaits the terminal `agent_end` event once and returns `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id` and compact workspace change references.
+- `pi_wait`: waits for a run to reach `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id` and compact workspace change references. When `timeout_ms` is provided, it may instead return a non-terminal heartbeat with `progress.elapsed_ms` and `progress.tool_calls_count`; call `pi_wait` again with the same `run_id` to continue waiting.
 - `pi_stop`: sends Pi's RPC abort command, waits for the grace period, then terminates the child process group if needed.
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
 - `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.

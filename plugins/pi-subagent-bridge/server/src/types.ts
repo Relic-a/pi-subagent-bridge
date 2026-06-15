@@ -11,6 +11,11 @@ export type RunState =
 
 export type TerminalState = "completed" | "failed" | "stopped" | "timed_out";
 
+export interface WaitProgress {
+  elapsed_ms: number;
+  tool_calls_count: number;
+}
+
 export interface ModelInfo {
   provider: string;
   model_id: string;
@@ -56,11 +61,12 @@ export interface RunWorkspace {
 
 export interface RunResult {
   run_id: string;
-  state: TerminalState;
+  state: RunState;
   final_answer: string;
   error?: string;
   session_id?: string;
   workspace?: RunWorkspace;
+  progress?: WaitProgress;
 }
 
 export interface ToolCallAudit {
