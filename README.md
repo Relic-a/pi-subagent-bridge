@@ -86,7 +86,6 @@ Environment variables:
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: MCP server cwd.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
 - `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `.pi-subagent-bridge`.
-- `PI_BRIDGE_MAX_CONCURRENT_RUNS`: default `3`.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.
 - `PI_BRIDGE_STOP_GRACE_MS`: default `5000`.
 - `PI_BRIDGE_MAX_TOOL_CALLS`: default `1000`.

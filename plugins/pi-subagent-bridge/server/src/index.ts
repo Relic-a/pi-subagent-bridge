@@ -41,7 +41,6 @@ const manager = new RunManager({
   allowedRoots: (process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot())
     .split(path.delimiter)
     .filter(Boolean),
-  maxConcurrentRuns: envInt("PI_BRIDGE_MAX_CONCURRENT_RUNS", 3),
   maxRuntimeMs: envInt("PI_BRIDGE_MAX_RUNTIME_MS", 30 * 60 * 1000),
   stopGraceMs: envInt("PI_BRIDGE_STOP_GRACE_MS", 5000),
   startMethod: process.env.PI_RPC_START_METHOD ?? "prompt",

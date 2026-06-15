@@ -27,9 +27,6 @@ export class RunManager {
         this.options = options;
     }
     async start(input) {
-        if (this.active.size >= this.options.maxConcurrentRuns) {
-            throw new Error(`Concurrency limit reached (${this.options.maxConcurrentRuns}).`);
-        }
         const cwd = this.validateWorkingDirectory(input.working_directory);
         const runId = crypto.randomUUID();
         const workspace = this.prepareWorkspace(cwd, runId, input.workspace_mode);

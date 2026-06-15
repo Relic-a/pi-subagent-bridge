@@ -40,7 +40,6 @@ function makeManager(
     piExecutable: "python3",
     piArgs: [fakePi],
     allowedRoots: [tmp],
-    maxConcurrentRuns: 2,
     maxRuntimeMs: 1000,
     stopGraceMs: 50,
     startMethod: "prompt",
@@ -176,7 +175,7 @@ describe("RunManager", () => {
     expect(result.state).toBe("failed");
   });
 
-  it("concurrency and timeout limits work", async () => {
+  it("timeout limit works", async () => {
     await manager.shutdown();
     store = new ToolCallStore(path.join(tmp, "state2.sqlite"));
     manager = new RunManager({
@@ -184,7 +183,6 @@ describe("RunManager", () => {
       piExecutable: "python3",
       piArgs: [fakePi],
       allowedRoots: [tmp],
-      maxConcurrentRuns: 1,
       maxRuntimeMs: 80,
       stopGraceMs: 20,
       startMethod: "prompt",
@@ -195,9 +193,6 @@ describe("RunManager", () => {
       task: "never one",
       working_directory: tmp,
     });
-    await expect(
-      manager.start({ task: "never two", working_directory: tmp }),
-    ).rejects.toThrow(/Concurrency/);
     await expect(manager.wait(first.run_id)).resolves.toHaveProperty(
       "state",
       "timed_out",

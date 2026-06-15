@@ -37,7 +37,6 @@ export interface RunManagerOptions {
   piArgs?: string[];
   piSessionDir?: string;
   allowedRoots: string[];
-  maxConcurrentRuns: number;
   maxRuntimeMs: number;
   stopGraceMs: number;
   startMethod: string;
@@ -56,11 +55,6 @@ export class RunManager {
   async start(
     input: StartRunInput,
   ): Promise<{ run_id: string; session_id?: string; workspace: RunWorkspace }> {
-    if (this.active.size >= this.options.maxConcurrentRuns) {
-      throw new Error(
-        `Concurrency limit reached (${this.options.maxConcurrentRuns}).`,
-      );
-    }
     const cwd = this.validateWorkingDirectory(input.working_directory);
     const runId = crypto.randomUUID();
     const workspace = this.prepareWorkspace(cwd, runId, input.workspace_mode);
