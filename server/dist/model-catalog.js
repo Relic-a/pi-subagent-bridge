@@ -32,13 +32,18 @@ export function normalizeModelResponse(response) {
         return {
             provider,
             model_id: modelId,
-            display_name: typeof item.display_name === "string" ? item.display_name : modelId,
-            reasoning_support: Boolean(item.reasoning_support ?? item.supports_reasoning ?? false),
-            context_window: nullableNumber(item.context_window),
-            maximum_output_tokens: nullableNumber(item.maximum_output_tokens ?? item.max_output_tokens),
-            supported_input_types: Array.isArray(item.supported_input_types)
-                ? item.supported_input_types.filter((value) => typeof value === "string")
-                : ["text"],
+            display_name: typeof item.display_name === "string"
+                ? item.display_name
+                : typeof item.name === "string"
+                    ? item.name
+                    : modelId,
+            reasoning_support: Boolean(item.reasoning_support ??
+                item.supports_reasoning ??
+                item.reasoning ??
+                false),
+            context_window: nullableNumber(item.context_window ?? item.contextWindow),
+            maximum_output_tokens: nullableNumber(item.maximum_output_tokens ?? item.max_output_tokens ?? item.maxTokens),
+            supported_input_types: inputTypes(item),
         };
     });
 }
@@ -71,4 +76,10 @@ function stringField(item, field, index, fallback) {
 }
 function nullableNumber(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function inputTypes(item) {
+    const value = item.supported_input_types ?? item.input;
+    return Array.isArray(value)
+        ? value.filter((entry) => typeof entry === "string")
+        : ["text"];
 }

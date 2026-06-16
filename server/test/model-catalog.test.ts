@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { listModels } from "../src/model-catalog.js";
+import { listModels, normalizeModelResponse } from "../src/model-catalog.js";
 
 const fakePi = fileURLToPath(new URL("./fixtures/fake-pi.py", import.meta.url));
 
@@ -34,5 +34,32 @@ describe("model catalog", () => {
       }),
     ).rejects.toThrow(/Malformed Pi model-list response/);
     delete process.env.FAKE_PI_MALFORMED_MODELS;
+  });
+
+  it("normalizes live Pi model payload fields", () => {
+    const result = normalizeModelResponse({
+      models: [
+        {
+          provider: "deepseek",
+          id: "deepseek-v4-pro",
+          name: "DeepSeek V4 Pro",
+          reasoning: true,
+          input: ["text"],
+          contextWindow: 1000000,
+          maxTokens: 384000,
+        },
+      ],
+    });
+    expect(result).toEqual([
+      {
+        provider: "deepseek",
+        model_id: "deepseek-v4-pro",
+        display_name: "DeepSeek V4 Pro",
+        reasoning_support: true,
+        context_window: 1000000,
+        maximum_output_tokens: 384000,
+        supported_input_types: ["text"],
+      },
+    ]);
   });
 });
