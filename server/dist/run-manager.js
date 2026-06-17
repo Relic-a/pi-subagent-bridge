@@ -461,11 +461,24 @@ export class RunManager {
         };
     }
     messageForAgent(task, workspace) {
-        if (workspace.mode !== "worktree")
-            return task;
-        return `${task}
+        const instructions = [
+            "You are a coding subagent working for a coordinator.",
+            "",
+            "Follow these instructions in order:",
+            "1. Treat the user task below as the authoritative request.",
+            "2. Inspect the repository before changing files, and follow existing project patterns.",
+            "3. Keep changes scoped to the task. Preserve unrelated user or repository changes.",
+            "4. Make concrete file edits when the task asks for implementation; do not stop at advice unless the task is only a question or review.",
+            "5. Run the most relevant verification available for your changes when feasible. If verification cannot be run, say why.",
+            "6. In your final answer, summarize changed files and verification only. Do not paste full diffs or patches.",
+        ];
+        if (workspace.mode === "worktree") {
+            instructions.push("", `Bridge workspace note: you are running in an isolated git worktree at ${workspace.agent_working_directory}. Make code changes in that worktree. The coordinator will inspect changes with git using the branch, worktree, and patch artifacts returned by the bridge.`);
+        }
+        return `${instructions.join("\n")}
 
-Bridge workspace note: you are running in an isolated git worktree at ${workspace.agent_working_directory}. Make code changes in files. In your final answer, summarize the work and tests only; do not paste full diffs or patches. The coordinator will inspect changes with git using the branch, worktree, and patch artifacts returned by the bridge.`;
+User task:
+${task}`;
     }
     finalizeWorkspace(runId) {
         const record = this.options.store.getRun(runId);

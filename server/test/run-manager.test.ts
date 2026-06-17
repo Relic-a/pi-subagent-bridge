@@ -63,6 +63,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_IGNORE_ABORT;
     delete process.env.FAKE_PI_ABORT_FILE;
     delete process.env.FAKE_PI_ARGS_FILE;
+    delete process.env.FAKE_PI_PROMPT_FILE;
     delete process.env.FAKE_PI_SIGNAL_FILE;
     delete process.env.FAKE_PI_SESSION_DIR;
     delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
@@ -294,6 +295,25 @@ describe("RunManager", () => {
     expect(fs.readFileSync(result.workspace!.patch_path!, "utf8")).toContain(
       "pi edit",
     );
+  });
+
+  it("wraps tasks with coordinator instructions before prompting Pi", async () => {
+    const promptFile = path.join(tmp, "prompt.txt");
+    process.env.FAKE_PI_PROMPT_FILE = promptFile;
+
+    const { run_id } = await manager.start({
+      task: "implement the requested change",
+      working_directory: tmp,
+      workspace_mode: "direct",
+    });
+    await manager.wait(run_id);
+
+    const prompt = fs.readFileSync(promptFile, "utf8");
+    expect(prompt).toContain("You are a coding subagent working for a coordinator.");
+    expect(prompt).toContain("Treat the user task below as the authoritative request.");
+    expect(prompt).toContain("Preserve unrelated user or repository changes.");
+    expect(prompt).toContain("Run the most relevant verification available");
+    expect(prompt).toContain("User task:\nimplement the requested change");
   });
 
   it("accepts and returns an explicit session_id", async () => {

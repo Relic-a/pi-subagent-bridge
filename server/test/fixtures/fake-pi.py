@@ -138,6 +138,10 @@ def handle(message):
     if message.get("type") == "prompt":
         global _session_emitted
         text = message.get("message", "")
+        prompt_file = os.environ.get("FAKE_PI_PROMPT_FILE")
+        if prompt_file:
+            with open(prompt_file, "w", encoding="utf-8") as fh:
+                fh.write(text)
         maybe_write_session_file()
         if (
             os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") != "1"
