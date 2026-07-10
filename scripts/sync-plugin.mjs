@@ -5,7 +5,7 @@ import process from "node:process";
 const root = path.resolve(import.meta.dirname, "..");
 const plugin = path.join(root, "plugins", "pi-subagent-bridge");
 const check = process.argv.includes("--check");
-const entries = ["server/src", "server/test", "server/dist", "server/package.json", "server/package-lock.json", "server/tsconfig.json", "skills"];
+const entries = ["server/src", "server/test", "server/dist", "server/package.json", "server/package-lock.json", "server/tsconfig.json", "skills", ".mcp.json"];
 
 let drift = false;
 for (const entry of entries) {

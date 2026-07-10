@@ -45,6 +45,9 @@ const manager = new RunManager({
     worktreeRootName: process.env.PI_BRIDGE_WORKTREE_ROOT_NAME,
     sessionIdFlag: process.env.PI_RPC_SESSION_ID_FLAG ?? "--session-id",
     noSessionFlag: process.env.PI_RPC_NO_SESSION_FLAG,
+    maxConcurrentRuns: envInt("PI_BRIDGE_MAX_CONCURRENT_RUNS", 4),
+    killGraceMs: envInt("PI_BRIDGE_KILL_GRACE_MS", 500),
+    redactFinalAnswers: process.env.PI_BRIDGE_REDACT_FINAL_ANSWERS === "1",
     onProgress: (event) => {
         void server
             ?.sendLoggingMessage({
@@ -107,6 +110,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 },
                 additionalProperties: false,
             },
+            outputSchema: {
+                type: "object",
+                properties: { models: { type: "array" } },
+                required: ["models"],
+            },
             annotations: {
                 title: "Search Pi models",
                 readOnlyHint: true,
@@ -146,6 +154,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 idempotentHint: false,
                 openWorldHint: false,
             },
+            outputSchema: {
+                type: "object",
+                properties: {
+                    run_id: { type: "string", format: "uuid" },
+                    session_id: { type: "string" },
+                    workspace: { type: "object" },
+                },
+                required: ["run_id", "workspace"],
+            },
         },
         {
             name: "pi_doctor",
@@ -175,13 +192,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                 type: "object",
                 required: ["run_id"],
                 properties: {
-                    run_id: { type: "string" },
+                    run_id: { type: "string", format: "uuid" },
                     timeout_ms: {
                         type: "number",
                         description: "Maximum milliseconds to wait before returning a progress heartbeat with state, elapsed_ms, and tool_calls_count. Omit to block until the run completes.",
                     },
                 },
+                additionalProperties: false,
             },
+            outputSchema: runResultSchema(),
+            annotations: standardAnnotations("Wait for Pi run", true),
         },
         {
             name: "pi_apply_changes",
@@ -189,7 +209,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: {
+                    run_id: { type: "string", format: "uuid" },
+                    dry_run: { type: "boolean" },
+                },
                 additionalProperties: false,
             },
             annotations: {
@@ -206,7 +229,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: { run_id: { type: "string", format: "uuid" } },
                 additionalProperties: false,
             },
             annotations: {
@@ -223,8 +246,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: { run_id: { type: "string", format: "uuid" } },
+                additionalProperties: false,
             },
+            annotations: standardAnnotations("Stop Pi run", false),
         },
         {
             name: "pi_recent_tool_calls",
@@ -232,11 +257,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 properties: {
-                    run_id: { type: "string" },
+                    run_id: { type: "string", format: "uuid" },
                     limit: { type: "number", minimum: 1, maximum: 500 },
                 },
                 additionalProperties: false,
             },
+            outputSchema: {
+                type: "object",
+                properties: { result: { type: "array" } },
+                required: ["result"],
+            },
+            annotations: standardAnnotations("Inspect Pi activity", true),
         },
         {
             name: "pi_get_run",
@@ -244,8 +275,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: { run_id: { type: "string", format: "uuid" } },
+                additionalProperties: false,
             },
+            outputSchema: runDiagnosticsSchema(),
+            annotations: standardAnnotations("Inspect Pi run", true),
         },
         {
             name: "pi_read_result",
@@ -253,8 +287,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             inputSchema: {
                 type: "object",
                 required: ["run_id"],
-                properties: { run_id: { type: "string" } },
+                properties: { run_id: { type: "string", format: "uuid" } },
+                additionalProperties: false,
             },
+            outputSchema: runResultSchema(),
+            annotations: standardAnnotations("Read Pi result", true),
         },
     ],
 }));
@@ -272,24 +309,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
                     timeoutMs: envInt("PI_BRIDGE_MODEL_LIST_TIMEOUT_MS", 15000),
                     modelListMethod: process.env.PI_RPC_MODEL_LIST_METHOD ?? "get_available_models",
+                    cacheTtlMs: envInt("PI_BRIDGE_MODEL_CACHE_TTL_MS", 60_000),
                 }, ModelsSchema.parse(args ?? {}).query));
             case "pi_start":
                 return jsonResult(await manager.start(StartSchema.parse(args ?? {})));
             case "pi_doctor":
-                return jsonResult(doctor());
+                return jsonResult(await doctor());
             case "pi_wait": {
                 const waitArgs = z
                     .object({
                     run_id: z.string().uuid(),
-                    timeout_ms: z.number().int().min(1).optional(),
+                    timeout_ms: z.number().int().min(0).optional(),
                 })
                     .parse(args ?? {});
                 return jsonResult(await manager.wait(waitArgs.run_id, waitArgs.timeout_ms));
             }
             case "pi_stop":
                 return jsonResult(await manager.stop(RunIdSchema.parse(args ?? {}).run_id));
-            case "pi_apply_changes":
-                return jsonResult(manager.applyChanges(RunIdSchema.parse(args ?? {}).run_id));
+            case "pi_apply_changes": {
+                const parsed = z
+                    .object({
+                    run_id: z.string().uuid(),
+                    dry_run: z.boolean().optional(),
+                })
+                    .parse(args ?? {});
+                return jsonResult(manager.applyChanges(parsed.run_id, parsed.dry_run));
+            }
             case "pi_discard_workspace":
                 return jsonResult(manager.discardWorkspace(RunIdSchema.parse(args ?? {}).run_id));
             case "pi_recent_tool_calls": {
@@ -347,7 +392,7 @@ function runResultSchema() {
     return {
         type: "object",
         properties: {
-            run_id: { type: "string" },
+            run_id: { type: "string", format: "uuid" },
             state: { type: "string" },
             final_answer: { type: "string" },
             error: { type: "string" },
@@ -357,7 +402,37 @@ function runResultSchema() {
         required: ["run_id", "state", "final_answer"],
     };
 }
-function doctor() {
+function runDiagnosticsSchema() {
+    return {
+        type: "object",
+        properties: {
+            run_id: { type: "string", format: "uuid" },
+            state: { type: "string" },
+            created_at: { type: "string" },
+            updated_at: { type: "string" },
+            working_directory: { type: "string" },
+            error: { type: "string" },
+            workspace: { type: "object" },
+        },
+        required: [
+            "run_id",
+            "state",
+            "created_at",
+            "updated_at",
+            "working_directory",
+        ],
+    };
+}
+function standardAnnotations(title, readOnlyHint) {
+    return {
+        title,
+        readOnlyHint,
+        destructiveHint: !readOnlyHint,
+        idempotentHint: readOnlyHint,
+        openWorldHint: false,
+    };
+}
+async function doctor() {
     const checks = [];
     const command = process.env.PI_EXECUTABLE ?? "pi";
     const executable = command.includes(path.sep)
@@ -371,6 +446,30 @@ function doctor() {
         detail: command,
         code: executable ? undefined : "PI_NOT_FOUND",
     });
+    if (executable) {
+        try {
+            const result = await listModels({
+                executable: command,
+                rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
+                timeoutMs: 5000,
+                modelListMethod: process.env.PI_RPC_MODEL_LIST_METHOD ?? "get_available_models",
+                cacheTtlMs: 5000,
+            });
+            checks.push({
+                name: "pi_rpc",
+                ok: true,
+                detail: `${result.models.length} models available`,
+            });
+        }
+        catch (error) {
+            checks.push({
+                name: "pi_rpc",
+                ok: false,
+                detail: error instanceof Error ? error.message : String(error),
+                code: "PI_RPC_UNAVAILABLE",
+            });
+        }
+    }
     checks.push({ name: "state_directory", ok: true, detail: dataDir });
     checks.push({
         name: "allowed_roots",
@@ -421,7 +520,7 @@ function prepareDataDir() {
     throw new Error(`No writable Pi bridge data directory found: ${errors.join("; ")}`);
 }
 function defaultAllowedRoot() {
-    return process.env.HOME ?? process.cwd();
+    return process.cwd();
 }
 async function shutdown(code) {
     clearInterval(keepAlive);

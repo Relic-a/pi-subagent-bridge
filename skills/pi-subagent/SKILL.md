@@ -1,13 +1,13 @@
 ---
 name: pi-subagent
-description: Use Pi coding-agent subprocesses only when the user explicitly requests Pi or requests a model unavailable through Codex's built-in subagents.
+description: Use Pi coding-agent subprocesses when the user explicitly requests Pi or requests a model unavailable through the host's built-in delegation tools.
 ---
 
 # Pi Subagent
 
 ## Routing
 
-Codex's built-in subagent system is the default for delegation. Do not use Pi
+The host's built-in delegation system is the default. Do not use Pi
 for ordinary task decomposition, parallel work, or coding delegation merely
 because Pi is available.
 
@@ -15,11 +15,11 @@ Use this skill only when one of these conditions is true:
 
 - The user explicitly asks to use Pi, the Pi subagent, the Pi bridge, or a Pi
   tool/session.
-- The user explicitly requests a model that is not available through Codex's
+- The user explicitly requests a model that is not available through the host's
   built-in subagent system. Use Pi to access that model.
 
-If neither condition applies, use Codex's built-in subagent system instead.
-If it is unclear whether a requested model is available to Codex's built-in
+If neither condition applies, use the host's built-in delegation system instead.
+If it is unclear whether a requested model is available to the host's built-in
 subagents, do not assume Pi; use the built-in system unless the user clarifies
 that they want Pi.
 
@@ -39,8 +39,11 @@ work, compare Pi models, or inspect Pi subagent activity.
 - Use `pi_read_result` only when the original wait connection was interrupted after the Pi run completed.
 - Use `pi_get_run` for diagnostics and recovery only. It also exposes the `session_id` for the run.
 - Prefer `workspace_mode: auto`; git repositories use isolated snapshot worktrees that include current tracked and untracked coordinator changes while returning only Pi's delta.
+- Use `workspace_mode: direct` only when isolation is unavailable or the user explicitly wants Pi to edit the primary checkout.
 - When a result includes `workspace`, inspect changes through `workspace.status_command`, `workspace.diff_command`, `workspace.patch_path`, or the listed `changed_files`. Do not request or paste the full patch into model context unless the task specifically needs it.
 - Integrate Pi work deliberately from the primary checkout by applying `workspace.patch_path`, merging `workspace.branch`, or manually porting selected files.
+- Prefer `pi_apply_changes` for a checked patch application; use `dry_run: true` when only conflict validation is wanted. After applying or rejecting the result, call `pi_discard_workspace` unless the branch is intentionally retained for review.
+- Use `pi_doctor` when Pi cannot start, model discovery fails, or bridge configuration is suspect; it checks the executable, RPC model listing, state directory, allowed roots, and git.
 - Use `pi_stop` only when the user explicitly asks to cancel a Pi run.
 - Use `pi_recent_tool_calls` for occasional inspection of current activity. Never use it as a status-polling loop.
 

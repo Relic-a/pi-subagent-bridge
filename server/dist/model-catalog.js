@@ -1,5 +1,18 @@
 import { PiRpcClient } from "./pi-rpc-client.js";
+const cache = new Map();
 export async function listModels(options, query) {
+    const cacheKey = JSON.stringify([
+        options.executable,
+        options.rpcArgs,
+        options.modelListMethod,
+    ]);
+    const cached = cache.get(cacheKey);
+    let models;
+    const ttl = options.cacheTtlMs ?? 0;
+    if (ttl > 0 && cached && cached.expiresAt > Date.now()) {
+        models = cached.models;
+        return { models: query ? filterModels(models, query) : models };
+    }
     const client = new PiRpcClient({
         executable: options.executable,
         args: options.rpcArgs,
@@ -7,7 +20,9 @@ export async function listModels(options, query) {
     const timer = setTimeout(() => client.terminate("SIGTERM"), options.timeoutMs);
     try {
         const response = await client.request(options.modelListMethod, query ? { query } : {});
-        const models = normalizeModelResponse(response);
+        models = normalizeModelResponse(response);
+        if (ttl > 0)
+            cache.set(cacheKey, { models, expiresAt: Date.now() + ttl });
         const filtered = query ? filterModels(models, query) : models;
         return { models: filtered };
     }

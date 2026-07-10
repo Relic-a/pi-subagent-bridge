@@ -32,6 +32,11 @@ _session_emitted = False
 aborted = False
 active_timer = None
 
+pid_file = os.environ.get("FAKE_PI_PID_FILE")
+if pid_file:
+    with open(pid_file, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+
 
 def record_signal(name):
     signal_file = os.environ.get("FAKE_PI_SIGNAL_FILE")
@@ -43,6 +48,8 @@ def record_signal(name):
 
 def handle_signal(signum, _frame):
     record_signal(signal.Signals(signum).name)
+    if signum == signal.SIGTERM and os.environ.get("FAKE_PI_IGNORE_SIGTERM") == "1":
+        return
     sys.exit(0)
 
 

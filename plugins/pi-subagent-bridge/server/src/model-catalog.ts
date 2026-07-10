@@ -6,12 +6,27 @@ export interface ModelCatalogOptions {
   rpcArgs?: string[];
   timeoutMs: number;
   modelListMethod: string;
+  cacheTtlMs?: number;
 }
+
+const cache = new Map<string, { expiresAt: number; models: ModelInfo[] }>();
 
 export async function listModels(
   options: ModelCatalogOptions,
   query?: string,
 ): Promise<{ models: ModelInfo[] }> {
+  const cacheKey = JSON.stringify([
+    options.executable,
+    options.rpcArgs,
+    options.modelListMethod,
+  ]);
+  const cached = cache.get(cacheKey);
+  let models: ModelInfo[];
+  const ttl = options.cacheTtlMs ?? 0;
+  if (ttl > 0 && cached && cached.expiresAt > Date.now()) {
+    models = cached.models;
+    return { models: query ? filterModels(models, query) : models };
+  }
   const client = new PiRpcClient({
     executable: options.executable,
     args: options.rpcArgs,
@@ -25,7 +40,8 @@ export async function listModels(
       options.modelListMethod,
       query ? { query } : {},
     );
-    const models = normalizeModelResponse(response);
+    models = normalizeModelResponse(response);
+    if (ttl > 0) cache.set(cacheKey, { models, expiresAt: Date.now() + ttl });
     const filtered = query ? filterModels(models, query) : models;
     return { models: filtered };
   } finally {

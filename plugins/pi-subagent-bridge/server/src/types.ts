@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { PiRpcClient } from "./pi-rpc-client.js";
 
 export type RunState =
   | "starting"
@@ -111,6 +112,11 @@ export interface ActiveRun {
   abortSent: boolean;
   forceTimer?: NodeJS.Timeout;
   timeoutTimer?: NodeJS.Timeout;
+  killTimer?: NodeJS.Timeout;
+  client: PiRpcClient;
+  sessionId?: string;
+  sessionSnapshot?: Map<string, number>;
+  settled: boolean;
 }
 
 export interface RunProgressEvent {

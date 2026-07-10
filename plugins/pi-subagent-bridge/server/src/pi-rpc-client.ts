@@ -16,6 +16,8 @@ export interface PiClientOptions {
   onEvent?: (event: RpcEvent) => void;
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
   onMalformedLine?: (line: string) => void;
+  requestTimeoutMs?: number;
+  ignoreNonJsonNoise?: boolean;
 }
 
 export class PiRpcClient {
@@ -24,7 +26,11 @@ export class PiRpcClient {
   private exited = false;
   private pending = new Map<
     string,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer?: NodeJS.Timeout;
+    }
   >();
 
   constructor(private options: PiClientOptions) {
@@ -34,10 +40,15 @@ export class PiRpcClient {
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    this.child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    this.child.stderr.on("data", (chunk) => {
+      for (const line of String(chunk).split(/\r?\n/).filter(Boolean)) {
+        process.stderr.write(`[pi-rpc] ${line}\n`);
+      }
+    });
     this.child.stdin.on("error", () => undefined);
     this.child.on("error", (error) => {
       for (const pending of this.pending.values()) {
+        if (pending.timer) clearTimeout(pending.timer);
         pending.reject(error);
       }
       this.pending.clear();
@@ -46,6 +57,7 @@ export class PiRpcClient {
     this.child.on("exit", (code, signal) => {
       this.exited = true;
       for (const pending of this.pending.values()) {
+        if (pending.timer) clearTimeout(pending.timer);
         pending.reject(
           new Error(
             `Pi RPC process exited before response: code=${code} signal=${signal}`,
@@ -69,9 +81,22 @@ export class PiRpcClient {
         return;
       }
       this.pending.set(id, { resolve, reject });
+      const pending = this.pending.get(id);
+      const timeoutMs = this.options.requestTimeoutMs;
+      if (pending && timeoutMs && timeoutMs > 0) {
+        pending.timer = setTimeout(() => {
+          if (!this.pending.delete(id)) return;
+          reject(
+            new Error(
+              `Pi RPC request timed out after ${timeoutMs}ms: ${method}`,
+            ),
+          );
+        }, timeoutMs);
+      }
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
         if (error) {
           this.pending.delete(id);
+          if (pending?.timer) clearTimeout(pending.timer);
           reject(error);
         }
       });
@@ -112,6 +137,7 @@ export class PiRpcClient {
     try {
       message = JSON.parse(line);
     } catch {
+      if (this.options.ignoreNonJsonNoise) return;
       this.options.onMalformedLine?.(line);
       return;
     }
@@ -121,6 +147,7 @@ export class PiRpcClient {
       const pending = this.pending.get(id);
       this.pending.delete(id);
       if (!pending) return;
+      if (pending.timer) clearTimeout(pending.timer);
       if (message.success === false || message.error)
         pending.reject(
           new Error(

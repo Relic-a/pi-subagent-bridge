@@ -11,7 +11,14 @@ const TERMINAL_STATES = new Set([
     "timed_out",
 ]);
 const ALLOWED_TRANSITIONS = {
-    starting: ["running", "completed", "failed", "stopping", "timed_out"],
+    starting: [
+        "running",
+        "completed",
+        "failed",
+        "stopping",
+        "stopped",
+        "timed_out",
+    ],
     running: ["completed", "failed", "stopping", "timed_out"],
     completed: [],
     failed: [],
@@ -27,6 +34,10 @@ export class RunManager {
         this.options = options;
     }
     async start(input) {
+        const maxConcurrentRuns = this.options.maxConcurrentRuns ?? 4;
+        if (this.active.size >= maxConcurrentRuns) {
+            throw new Error(`RUN_CONCURRENCY_LIMIT: maximum ${maxConcurrentRuns} active runs`);
+        }
         const cwd = this.validateWorkingDirectory(input.working_directory);
         const runId = crypto.randomUUID();
         const workspace = this.prepareWorkspace(cwd, runId, input.workspace_mode);
@@ -55,6 +66,8 @@ export class RunManager {
             onMalformedLine: (line) => {
                 this.failRun(runId, `Malformed Pi JSONL output: ${line.slice(0, 160)}`);
             },
+            requestTimeoutMs: Number.parseInt(process.env.PI_RPC_REQUEST_TIMEOUT_MS ?? "120000", 10),
+            ignoreNonJsonNoise: process.env.PI_RPC_IGNORE_NON_JSON_NOISE === "1",
         });
         const run = {
             run_id: runId,
@@ -65,47 +78,50 @@ export class RunManager {
             resolveOnce,
             stopRequested: false,
             abortSent: false,
+            client,
+            sessionId,
+            sessionSnapshot,
+            settled: false,
         };
-        run.client = client;
-        run.sessionId = sessionId;
-        run.sessionSnapshot = sessionSnapshot;
         this.active.set(runId, run);
-        this.options.store.createRun({
-            run_id: runId,
-            task: input.task,
-            state: "starting",
-            created_at: now,
-            updated_at: now,
-            working_directory: cwd,
-            provider: input.provider,
-            model_id: input.model_id,
-            thinking_level: input.thinking_level,
-            session_id: sessionId,
-            workspace,
-        });
+        let pruned;
+        try {
+            pruned = this.options.store.createRun({
+                run_id: runId,
+                task: input.task,
+                state: "starting",
+                created_at: now,
+                updated_at: now,
+                working_directory: cwd,
+                provider: input.provider,
+                model_id: input.model_id,
+                thinking_level: input.thinking_level,
+                session_id: sessionId,
+                workspace,
+            }, this.active.keys());
+        }
+        catch (error) {
+            this.killRun(run, "SIGKILL");
+            this.active.delete(runId);
+            this.removeWorkspace(workspace);
+            throw error;
+        }
+        for (const record of pruned)
+            this.removeWorkspace(record.workspace);
         this.emitProgress(runId, "starting");
         run.timeoutTimer = setTimeout(() => {
-            this.transition(runId, "timed_out", {
-                error: "Pi run exceeded maximum runtime.",
-            });
-            this.killRun(run, "SIGTERM");
-            run.resolveOnce({
-                run_id: runId,
-                state: "timed_out",
-                final_answer: "",
-                error: "Maximum runtime exceeded.",
-                session_id: this.getRunSessionId(runId),
-                workspace: this.finalizeWorkspace(runId),
-            });
-            this.active.delete(runId);
+            this.finalizeOnce(runId, "timed_out", "", "Maximum runtime exceeded.");
         }, this.options.maxRuntimeMs);
         client
             .request(this.options.startMethod, {
             message: this.messageForAgent(input.task, workspace),
         })
             .then((data) => {
+            const active = this.active.get(runId);
+            if (!active || active.settled || active.state !== "starting")
+                return;
             this.captureSessionId(runId, data);
-            this.transition(runId, "running");
+            this.transition(runId, "running", undefined, true);
             this.emitProgress(runId, "running");
         })
             .catch((error) => {
@@ -147,7 +163,7 @@ export class RunManager {
                 new Promise((resolve) => {
                     progressTimer = setTimeout(() => {
                         progressTimer = undefined;
-                        const toolCallsCount = this.options.store.recentToolCalls(undefined, runId).length;
+                        const toolCallsCount = this.options.store.countToolCalls(runId);
                         resolve({
                             run_id: runId,
                             state: active.state,
@@ -176,24 +192,10 @@ export class RunManager {
             return this.getRun(runId);
         if (!active.stopRequested) {
             active.stopRequested = true;
-            this.transition(runId, "stopping");
+            this.transition(runId, "stopping", undefined, true);
             active.abortSent = this.sendAbort(active);
             active.forceTimer = setTimeout(() => {
-                this.killRun(active, "SIGTERM");
-                setTimeout(() => {
-                    if (this.active.has(runId)) {
-                        this.killRun(active, "SIGKILL");
-                        this.transition(runId, "stopped");
-                        active.resolveOnce({
-                            run_id: runId,
-                            state: "stopped",
-                            final_answer: "",
-                            session_id: this.getRunSessionId(runId),
-                            workspace: this.finalizeWorkspace(runId),
-                        });
-                        this.cleanup(runId);
-                    }
-                }, 500);
+                this.finalizeOnce(runId, "stopped", "");
             }, this.options.stopGraceMs);
         }
         return this.getRun(runId);
@@ -235,7 +237,7 @@ export class RunManager {
     recentToolCalls(limit, runId) {
         return this.options.store.recentToolCalls(limit, runId);
     }
-    applyChanges(runId) {
+    applyChanges(runId, dryRun = false) {
         const result = this.readResult(runId);
         const workspace = result.workspace;
         if (!workspace?.repo_root || !workspace.patch_path)
@@ -243,13 +245,39 @@ export class RunManager {
         const current = this.git(workspace.repo_root, ["rev-parse", "HEAD"]).trim();
         if (workspace.target_commit && current !== workspace.target_commit)
             throw new Error("TARGET_REVISION_CHANGED");
+        const worktreeRoot = workspace.worktree_path
+            ? path
+                .relative(workspace.repo_root, workspace.worktree_path)
+                .split(path.sep)[0]
+            : undefined;
+        const statusArgs = [
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--",
+            ".",
+        ];
+        if (worktreeRoot)
+            statusArgs.push(`:(exclude)${worktreeRoot}`);
+        if (this.git(workspace.repo_root, statusArgs).trim())
+            throw new Error("TARGET_WORKTREE_DIRTY");
         this.git(workspace.repo_root, [
             "apply",
             "--check",
             "--binary",
             workspace.patch_path,
         ]);
+        if (dryRun) {
+            return {
+                run_id: runId,
+                applied: false,
+                changed_files: workspace.changed_files ?? [],
+            };
+        }
         this.git(workspace.repo_root, ["apply", "--binary", workspace.patch_path]);
+        if (process.env.PI_BRIDGE_AUTO_DISCARD_AFTER_APPLY === "1") {
+            this.discardWorkspace(runId);
+        }
         return {
             run_id: runId,
             applied: true,
@@ -275,16 +303,8 @@ export class RunManager {
         const runs = [...this.active.values()];
         for (const run of runs) {
             this.sendAbort(run);
-            this.killRun(run, "SIGTERM");
-            this.transition(run.run_id, run.state === "stopping" ? "stopped" : "stopping");
-            this.transition(run.run_id, "stopped");
-            run.resolveOnce({
-                run_id: run.run_id,
-                state: "stopped",
-                final_answer: "",
-                session_id: this.getRunSessionId(run.run_id),
-                workspace: this.finalizeWorkspace(run.run_id),
-            });
+            this.finalizeOnce(run.run_id, "stopped", "");
+            this.killRun(run, "SIGKILL");
             this.cleanup(run.run_id);
         }
         this.options.store.close();
@@ -332,86 +352,53 @@ export class RunManager {
                 "");
             this.captureSessionId(runId, params);
             const sessionId = this.getRunSessionId(runId);
-            this.transition(runId, state, {
-                final_answer: state === "completed" ? finalAnswer : undefined,
-                error: state === "failed"
-                    ? String(params.error ?? "Pi run failed.")
-                    : undefined,
-            });
-            active?.resolveOnce({
-                run_id: runId,
-                state,
-                final_answer: finalAnswer,
-                error: state === "failed"
-                    ? String(params.error ?? "Pi run failed.")
-                    : undefined,
-                session_id: sessionId,
-                workspace: this.finalizeWorkspace(runId),
-            });
-            if (active)
-                this.killRun(active, "SIGTERM");
-            this.emitProgress(runId, "terminal");
-            this.cleanup(runId);
+            this.finalizeOnce(runId, state, finalAnswer, state === "failed"
+                ? String(params.error ?? "Pi run failed.")
+                : undefined, sessionId);
         }
     }
     handleExit(runId, code, signal) {
         if (this.shuttingDown)
             return;
         const active = this.active.get(runId);
-        if (!active || TERMINAL_STATES.has(active.state))
+        if (!active)
             return;
+        if (active.settled) {
+            this.cleanup(runId);
+            return;
+        }
         const sessionId = this.getRunSessionId(runId);
         if (active.state === "stopping") {
-            this.transition(runId, "stopped");
-            active.resolveOnce({
-                run_id: runId,
-                state: "stopped",
-                final_answer: "",
-                session_id: sessionId,
-                workspace: this.finalizeWorkspace(runId),
-            });
+            this.finalizeOnce(runId, "stopped", "", undefined, sessionId, false);
         }
         else {
-            this.transition(runId, "failed", {
-                error: `Pi process exited unexpectedly: code=${code} signal=${signal}`,
-            });
-            active.resolveOnce({
-                run_id: runId,
-                state: "failed",
-                final_answer: "",
-                error: `Pi process exited unexpectedly: code=${code} signal=${signal}`,
-                session_id: sessionId,
-                workspace: this.finalizeWorkspace(runId),
-            });
+            const error = `Pi process exited unexpectedly: code=${code} signal=${signal}`;
+            this.finalizeOnce(runId, "failed", "", error, sessionId, false);
         }
         this.cleanup(runId);
     }
     failRun(runId, error) {
         const active = this.active.get(runId);
-        if (!active || TERMINAL_STATES.has(active.state))
+        if (!active || active.settled || TERMINAL_STATES.has(active.state))
             return;
         if (active.state === "stopping")
             return;
         const sessionId = this.getRunSessionId(runId);
-        this.transition(runId, "failed", { error });
-        active.resolveOnce({
-            run_id: runId,
-            state: "failed",
-            final_answer: "",
-            error,
-            session_id: sessionId,
-            workspace: this.finalizeWorkspace(runId),
-        });
-        this.cleanup(runId);
+        this.finalizeOnce(runId, "failed", "", error, sessionId);
     }
-    transition(runId, next, fields) {
+    transition(runId, next, fields, tolerateRace = false) {
         const active = this.active.get(runId);
         const current = active?.state ?? this.options.store.getRun(runId)?.state;
-        if (!current)
+        if (!current) {
+            if (tolerateRace)
+                return false;
             throw new Error(`Unknown run_id: ${runId}`);
+        }
         if (current === next)
-            return;
+            return true;
         if (!ALLOWED_TRANSITIONS[current].includes(next)) {
+            if (tolerateRace && TERMINAL_STATES.has(current))
+                return false;
             throw new Error(`Invalid run state transition: ${current} -> ${next}`);
         }
         if (active)
@@ -423,6 +410,7 @@ export class RunManager {
             run_id: runId,
             state: next,
         }) + "\n");
+        return true;
     }
     validateWorkingDirectory(input) {
         if (!input || input.includes("\0"))
@@ -468,85 +456,123 @@ export class RunManager {
         const worktreePath = path.join(worktreesRoot, runId);
         const artifactsDir = path.join(worktreePath, ".pi-bridge");
         const branch = `pi/run-${runSlug}`;
-        fs.mkdirSync(worktreesRoot, { recursive: true });
-        this.git(git.repoRoot, [
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            worktreePath,
-            git.baseCommit,
-        ]);
-        fs.mkdirSync(artifactsDir, { recursive: true });
-        const useSnapshot = mode === "auto" || mode === "snapshot";
-        let snapshotApplied = false;
-        let agentBaseCommit = git.baseCommit;
-        if (useSnapshot) {
-            const dirtyPatch = this.git(git.repoRoot, [
-                "diff",
-                "--binary",
-                "HEAD",
-                "--",
+        let registered = false;
+        try {
+            fs.mkdirSync(worktreesRoot, { recursive: true });
+            this.git(git.repoRoot, [
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                worktreePath,
+                git.baseCommit,
             ]);
-            if (dirtyPatch.trim()) {
-                const snapshotPatch = path.join(artifactsDir, "coordinator-snapshot.patch");
-                fs.writeFileSync(snapshotPatch, dirtyPatch, "utf8");
-                this.git(worktreePath, ["apply", "--binary", snapshotPatch]);
-                snapshotApplied = true;
-            }
-            const untracked = this.git(git.repoRoot, [
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-            ])
-                .split("\n")
-                .map((entry) => entry.trim())
-                .filter(Boolean)
-                .filter((entry) => !entry.startsWith(`${worktreeRootName}/`));
-            for (const relative of untracked) {
-                const source = path.join(git.repoRoot, relative);
-                const target = path.join(worktreePath, relative);
-                fs.mkdirSync(path.dirname(target), { recursive: true });
-                fs.copyFileSync(source, target);
-                snapshotApplied = true;
-            }
-            if (snapshotApplied) {
-                this.git(worktreePath, ["add", "-A"]);
-                this.git(worktreePath, [
-                    "-c",
-                    "user.name=Pi Bridge",
-                    "-c",
-                    "user.email=pi-bridge@localhost",
-                    "commit",
-                    "-m",
-                    "chore: snapshot coordinator workspace",
+            registered = true;
+            fs.mkdirSync(artifactsDir, { recursive: true });
+            const useSnapshot = mode === "auto" || mode === "snapshot";
+            let snapshotApplied = false;
+            let agentBaseCommit = git.baseCommit;
+            if (useSnapshot) {
+                const dirtyPatch = this.git(git.repoRoot, [
+                    "diff",
+                    "--binary",
+                    "HEAD",
+                    "--",
                 ]);
-                agentBaseCommit = this.git(worktreePath, ["rev-parse", "HEAD"]).trim();
+                if (dirtyPatch.trim()) {
+                    const snapshotPatch = path.join(artifactsDir, "coordinator-snapshot.patch");
+                    fs.writeFileSync(snapshotPatch, dirtyPatch, "utf8");
+                    this.git(worktreePath, ["apply", "--binary", snapshotPatch]);
+                    snapshotApplied = true;
+                }
+                const untracked = this.git(git.repoRoot, [
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                ])
+                    .split("\n")
+                    .map((entry) => entry.trim())
+                    .filter(Boolean)
+                    .filter((entry) => !entry.startsWith(`${worktreeRootName}/`));
+                const maxSnapshotBytes = Number.parseInt(process.env.PI_BRIDGE_MAX_SNAPSHOT_FILE_BYTES ?? "10485760", 10);
+                const ignoredSnapshot = /(^|\/)(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx))$/i;
+                for (const relative of untracked) {
+                    if (ignoredSnapshot.test(relative))
+                        continue;
+                    const source = path.join(git.repoRoot, relative);
+                    const target = path.join(worktreePath, relative);
+                    const stat = fs.lstatSync(source);
+                    if (!stat.isFile() || stat.size > maxSnapshotBytes)
+                        continue;
+                    fs.mkdirSync(path.dirname(target), { recursive: true });
+                    fs.copyFileSync(source, target);
+                    snapshotApplied = true;
+                }
+                if (snapshotApplied) {
+                    this.git(worktreePath, ["add", "-A"]);
+                    this.git(worktreePath, [
+                        "-c",
+                        "user.name=Pi Bridge",
+                        "-c",
+                        "user.email=pi-bridge@localhost",
+                        "commit",
+                        "-m",
+                        "chore: snapshot coordinator workspace",
+                    ]);
+                    agentBaseCommit = this.git(worktreePath, [
+                        "rev-parse",
+                        "HEAD",
+                    ]).trim();
+                }
             }
+            const relativeCwd = path.relative(git.repoRoot, cwd);
+            const agentCwd = path.join(worktreePath, relativeCwd);
+            const patchPath = path.join(artifactsDir, "changes.patch");
+            return {
+                mode: "worktree",
+                original_working_directory: cwd,
+                agent_working_directory: agentCwd,
+                repo_root: git.repoRoot,
+                worktree_path: worktreePath,
+                branch,
+                base_commit: agentBaseCommit,
+                source_base_commit: git.baseCommit,
+                snapshot_applied: snapshotApplied,
+                target_commit: this.git(git.repoRoot, ["rev-parse", "HEAD"]).trim(),
+                artifacts_dir: artifactsDir,
+                status_path: path.join(artifactsDir, "status.txt"),
+                patch_path: patchPath,
+                metadata_path: path.join(artifactsDir, "workspace.json"),
+                status_command: `git -C ${quoteShell(worktreePath)} status --short`,
+                diff_command: `git -C ${quoteShell(worktreePath)} diff ${agentBaseCommit} --`,
+                apply_command: `git -C ${quoteShell(git.repoRoot)} apply ${quoteShell(patchPath)}`,
+                merge_command: `git -C ${quoteShell(git.repoRoot)} merge --no-ff ${quoteShell(branch)}`,
+            };
         }
-        const relativeCwd = path.relative(git.repoRoot, cwd);
-        const agentCwd = path.join(worktreePath, relativeCwd);
-        const patchPath = path.join(artifactsDir, "changes.patch");
-        return {
-            mode: "worktree",
-            original_working_directory: cwd,
-            agent_working_directory: agentCwd,
-            repo_root: git.repoRoot,
-            worktree_path: worktreePath,
-            branch,
-            base_commit: agentBaseCommit,
-            source_base_commit: git.baseCommit,
-            snapshot_applied: snapshotApplied,
-            target_commit: this.git(git.repoRoot, ["rev-parse", "HEAD"]).trim(),
-            artifacts_dir: artifactsDir,
-            status_path: path.join(artifactsDir, "status.txt"),
-            patch_path: patchPath,
-            metadata_path: path.join(artifactsDir, "workspace.json"),
-            status_command: `git -C ${quoteShell(worktreePath)} status --short`,
-            diff_command: `git -C ${quoteShell(worktreePath)} diff ${git.baseCommit} --`,
-            apply_command: `git -C ${quoteShell(git.repoRoot)} apply ${quoteShell(patchPath)}`,
-            merge_command: `git -C ${quoteShell(git.repoRoot)} merge --no-ff ${quoteShell(branch)}`,
-        };
+        catch (error) {
+            if (registered) {
+                try {
+                    this.git(git.repoRoot, [
+                        "worktree",
+                        "remove",
+                        "--force",
+                        worktreePath,
+                    ]);
+                }
+                catch {
+                    fs.rmSync(worktreePath, { recursive: true, force: true });
+                    try {
+                        this.git(git.repoRoot, ["worktree", "prune"]);
+                    }
+                    catch { }
+                }
+            }
+            try {
+                this.git(git.repoRoot, ["branch", "-D", branch]);
+            }
+            catch { }
+            throw error;
+        }
     }
     messageForAgent(task, workspace) {
         const instructions = [
@@ -685,8 +711,7 @@ ${task}`;
     }
     getRunSessionId(runId) {
         const run = this.active.get(runId);
-        const sid = run?.sessionId ??
-            undefined;
+        const sid = run?.sessionId;
         if (sid)
             return sid;
         const inferred = this.inferSessionId(runId);
@@ -701,8 +726,13 @@ ${task}`;
         const record = this.options.store.getRun(runId);
         if (!record || record.session_id)
             return record?.session_id;
-        const snapshot = run
-            .sessionSnapshot ?? new Map();
+        // Filesystem inference cannot safely assign a newly-created session when
+        // multiple runs are racing in the same bridge process. Prefer no id over a
+        // confidently wrong id; normal RPC session events remain authoritative.
+        const inferable = [...this.active.values()].filter((candidate) => !candidate.sessionId && !candidate.settled);
+        if (inferable.length > 1)
+            return undefined;
+        const snapshot = run.sessionSnapshot ?? new Map();
         const inferred = newestCreatedSessionId(this.sessionDirsFor(record.workspace?.agent_working_directory ?? record.working_directory), snapshot, run.startedAtMs);
         if (!inferred)
             return undefined;
@@ -737,8 +767,7 @@ ${task}`;
             state: active.state,
             phase,
             elapsed_ms: Date.now() - active.startedAtMs,
-            tool_calls_count: this.options.store.recentToolCalls(undefined, runId)
-                .length,
+            tool_calls_count: this.options.store.countToolCalls(runId),
             latest_tool: latestTool,
         });
     }
@@ -750,7 +779,66 @@ ${task}`;
             clearTimeout(run.timeoutTimer);
         if (run.forceTimer)
             clearTimeout(run.forceTimer);
+        if (run.killTimer)
+            clearTimeout(run.killTimer);
         this.active.delete(runId);
+    }
+    finalizeOnce(runId, state, finalAnswer, error, sessionId = this.getRunSessionId(runId), terminate = true) {
+        const run = this.active.get(runId);
+        if (!run || run.settled)
+            return false;
+        run.settled = true;
+        if (run.timeoutTimer)
+            clearTimeout(run.timeoutTimer);
+        if (run.forceTimer)
+            clearTimeout(run.forceTimer);
+        const storedAnswer = this.options.redactFinalAnswers && finalAnswer
+            ? String(redactSecrets(finalAnswer))
+            : finalAnswer;
+        this.transition(runId, state, {
+            error,
+            final_answer: state === "completed" ? storedAnswer : undefined,
+        }, true);
+        const workspace = this.finalizeWorkspace(runId);
+        run.resolveOnce({
+            run_id: runId,
+            state,
+            final_answer: finalAnswer,
+            error,
+            session_id: sessionId,
+            workspace,
+        });
+        this.emitProgress(runId, "terminal");
+        if (terminate) {
+            this.killRun(run, "SIGTERM");
+            run.killTimer = setTimeout(() => {
+                this.killRun(run, "SIGKILL");
+                this.cleanup(runId);
+            }, this.options.killGraceMs ?? 500);
+        }
+        else {
+            this.cleanup(runId);
+        }
+        return true;
+    }
+    removeWorkspace(workspace) {
+        if (!workspace?.repo_root || !workspace.worktree_path)
+            return;
+        try {
+            this.git(workspace.repo_root, [
+                "worktree",
+                "remove",
+                "--force",
+                workspace.worktree_path,
+            ]);
+        }
+        catch { }
+        if (workspace.branch) {
+            try {
+                this.git(workspace.repo_root, ["branch", "-D", workspace.branch]);
+            }
+            catch { }
+        }
     }
 }
 function extractFinalAnswer(messages) {

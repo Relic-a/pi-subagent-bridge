@@ -11,6 +11,7 @@ export class ToolCallStore {
         this.maxToolCalls = limits?.maxToolCalls ?? 1000;
         this.maxRuns = limits?.maxRuns ?? 200;
         this.db.pragma("journal_mode = WAL");
+        this.db.pragma("foreign_keys = ON");
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
@@ -33,19 +34,24 @@ export class ToolCallStore {
         run_id TEXT NOT NULL,
         pi_tool_call_id TEXT NOT NULL,
         tool_name TEXT NOT NULL,
-        arguments_json TEXT
+        arguments_json TEXT,
+        FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
       );
+      CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id_sequence
+        ON tool_calls(run_id, sequence DESC);
     `);
         this.ensureColumn("runs", "session_id", "TEXT");
         this.ensureColumn("runs", "workspace_json", "TEXT");
+        this.migrateSchema();
     }
-    createRun(record) {
+    createRun(record, protectedRunIds = []) {
         this.db
             .prepare(`INSERT INTO runs
         (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, session_id, error, final_answer, workspace_json)
         VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer, @workspace_json)`)
             .run(normalizeRecord(record));
-        this.pruneRuns();
+        return this.pruneRuns(protectedRunIds);
     }
     updateRun(runId, state, fields) {
         this.db
@@ -113,6 +119,12 @@ export class ToolCallStore {
                 : undefined,
         }));
     }
+    countToolCalls(runId) {
+        const row = this.db
+            .prepare("SELECT COUNT(*) AS count FROM tool_calls WHERE run_id = ?")
+            .get(runId);
+        return row.count;
+    }
     close() {
         this.db.close();
     }
@@ -122,11 +134,23 @@ export class ToolCallStore {
        (SELECT sequence FROM tool_calls ORDER BY sequence DESC LIMIT ?)`)
             .run(this.maxToolCalls);
     }
-    pruneRuns() {
-        this.db
-            .prepare(`DELETE FROM runs WHERE run_id NOT IN
-       (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT ?)`)
-            .run(this.maxRuns);
+    pruneRuns(protectedRunIds) {
+        const protectedIds = new Set(protectedRunIds);
+        const rows = this.db
+            .prepare("SELECT * FROM runs ORDER BY created_at DESC")
+            .all();
+        const candidates = rows
+            .slice(this.maxRuns)
+            .filter((row) => !protectedIds.has(row.run_id));
+        if (candidates.length === 0)
+            return [];
+        const remove = this.db.transaction((ids) => {
+            const statement = this.db.prepare("DELETE FROM runs WHERE run_id = ?");
+            for (const id of ids)
+                statement.run(id);
+        });
+        remove(candidates.map((row) => row.run_id));
+        return candidates.map(mapRun);
     }
     ensureColumn(table, column, type) {
         const columns = this.db
@@ -135,6 +159,37 @@ export class ToolCallStore {
         if (!columns.some((entry) => entry.name === column)) {
             this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
         }
+    }
+    migrateSchema() {
+        const foreignKeys = this.db
+            .prepare("PRAGMA foreign_key_list(tool_calls)")
+            .all();
+        if (!foreignKeys.some((key) => key.table === "runs" && key.on_delete === "CASCADE")) {
+            this.db.transaction(() => {
+                this.db.exec(`
+          ALTER TABLE tool_calls RENAME TO tool_calls_legacy;
+          CREATE TABLE tool_calls (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            pi_tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments_json TEXT,
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+          );
+          INSERT INTO tool_calls
+            SELECT * FROM tool_calls_legacy
+            WHERE run_id IN (SELECT run_id FROM runs);
+          DROP TABLE tool_calls_legacy;
+        `);
+            })();
+        }
+        this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id_sequence
+        ON tool_calls(run_id, sequence DESC);
+      PRAGMA user_version = 1;
+    `);
     }
 }
 function normalizeRecord(record) {

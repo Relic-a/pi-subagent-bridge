@@ -13,7 +13,7 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
 - `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.
 - `pi_read_result`: reads an already completed result after an interrupted wait connection, including any Pi `session_id`.
-- `pi_apply_changes`: conflict-checks and applies a completed isolated run's patch to the coordinator checkout.
+- `pi_apply_changes`: conflict-checks and applies a completed isolated run's patch to the coordinator checkout. Pass `dry_run: true` to perform only the checks.
 - `pi_discard_workspace`: removes a completed run's isolated worktree and branch.
 
 ## Session Continuation
@@ -38,7 +38,7 @@ Worktree results do not inline full diffs into MCP responses. Instead, `pi_start
 - `status_path`, `patch_path`, and `metadata_path` under `.pi-bridge/` in the worktree.
 - `status_command`, `diff_command`, `apply_command`, and `merge_command`.
 
-This lets the coordinating Codex inspect changes with normal git commands, or apply the generated patch, without loading every changed line into the context window. Worktrees start from `HEAD`; uncommitted changes in the original checkout remain isolated in the original checkout.
+This lets the coordinator inspect changes with normal git commands, or apply the generated patch, without loading every changed line into the context window. In `auto` and `snapshot` modes, the worktree receives a private snapshot commit containing eligible coordinator changes; returned patches and `diff_command` show only the agent's changes after that snapshot.
 
 ## Installation For Users
 
@@ -98,11 +98,19 @@ Environment variables:
 - `PI_RPC_ABORT_METHOD`: default `abort`.
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: MCP server cwd.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
-- `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `.pi-subagent-bridge`.
+- `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `$XDG_STATE_HOME/pi-subagent-bridge`, then `$HOME/.local/state/pi-subagent-bridge`, with the OS temporary directory as a fallback.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.
 - `PI_BRIDGE_STOP_GRACE_MS`: default `5000`.
 - `PI_BRIDGE_MAX_TOOL_CALLS`: default `1000`.
 - `PI_BRIDGE_MAX_RUNS`: default `200`.
+- `PI_BRIDGE_MAX_CONCURRENT_RUNS`: default `4`; additional starts fail with `RUN_CONCURRENCY_LIMIT`.
+- `PI_BRIDGE_KILL_GRACE_MS`: delay between terminal `SIGTERM` and fallback `SIGKILL`. Default: `500`.
+- `PI_BRIDGE_MODEL_CACHE_TTL_MS`: model catalog cache TTL. Default: `60000`.
+- `PI_RPC_REQUEST_TIMEOUT_MS`: timeout for an individual RPC request. Default: `120000`.
+- `PI_RPC_IGNORE_NON_JSON_NOISE`: set to `1` to ignore non-JSON stdout lines instead of failing the run.
+- `PI_BRIDGE_MAX_SNAPSHOT_FILE_BYTES`: maximum copied untracked-file size. Default: `10485760`; `.env*` and common private-key files are always skipped.
+- `PI_BRIDGE_REDACT_FINAL_ANSWERS`: set to `1` to redact likely secrets before persisting final answers. Returned live answers are unchanged.
+- `PI_BRIDGE_AUTO_DISCARD_AFTER_APPLY`: set to `1` to remove a worktree after its patch applies successfully.
 
 ## Development
 
@@ -122,6 +130,7 @@ Tests use `server/test/fixtures/fake-pi.py`, a deterministic JSONL executable th
 - Tool-call audit storage records only `tool_execution_start` metadata. It never persists tool results, output chunks, or `tool_execution_end` result content.
 - Arguments are redacted for likely credentials, tokens, passwords, authorization headers, and common API-key patterns before persistence.
 - Completed model responses are persisted only as final answers for interrupted-wait recovery.
+- Final answers may contain secrets. Enable `PI_BRIDGE_REDACT_FINAL_ANSWERS=1` when recovery fidelity is less important than minimizing persisted secret risk.
 
 ## Troubleshooting
 

@@ -5,10 +5,7 @@
       "command": "node",
       "args": [
         "./server/dist/index.js"
-      ],
-      "env": {
-        "PI_BRIDGE_DATA_DIR": "/tmp/pi-subagent-bridge"
-      }
+      ]
     }
   }
 }

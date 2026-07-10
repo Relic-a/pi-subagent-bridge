@@ -67,6 +67,8 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_SIGNAL_FILE;
     delete process.env.FAKE_PI_SESSION_DIR;
     delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
+    delete process.env.FAKE_PI_IGNORE_SIGTERM;
+    delete process.env.FAKE_PI_PID_FILE;
   });
 
   it("returns from start before fake agent completes and wait resolves on agent_end", async () => {
@@ -94,6 +96,21 @@ describe("RunManager", () => {
     ]);
     expect(results[0]).toEqual(results[1]);
     expect(manager.getRun(run_id).state).toBe("completed");
+  });
+
+  it("enforces the configured concurrent run limit", async () => {
+    await manager.shutdown();
+    makeManager(undefined, { maxConcurrentRuns: 1 });
+    const first = await manager.start({
+      task: "never occupy slot",
+      working_directory: tmp,
+      workspace_mode: "direct",
+    });
+    await expect(
+      manager.start({ task: "second", working_directory: tmp }),
+    ).rejects.toThrow(/RUN_CONCURRENCY_LIMIT/);
+    await manager.stop(first.run_id);
+    await manager.wait(first.run_id);
   });
 
   it("interrupted wait does not stop the agent", async () => {
@@ -198,6 +215,27 @@ describe("RunManager", () => {
       "state",
       "timed_out",
     );
+  });
+
+  it("timeout escalates to SIGKILL and does not orphan the process group", async () => {
+    await manager.shutdown();
+    const pidFile = path.join(tmp, "pi.pid");
+    process.env.FAKE_PI_PID_FILE = pidFile;
+    process.env.FAKE_PI_IGNORE_SIGTERM = "1";
+    process.env.FAKE_PI_IGNORE_ABORT = "1";
+    makeManager(undefined, { maxRuntimeMs: 60, killGraceMs: 40 });
+    const { run_id } = await manager.start({
+      task: "never survive timeout",
+      working_directory: tmp,
+      workspace_mode: "direct",
+    });
+    await expect(manager.wait(run_id)).resolves.toHaveProperty(
+      "state",
+      "timed_out",
+    );
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(() => process.kill(pid, 0)).toThrow();
   });
 
   it("exposes session_id in diagnostics and results when run without explicit session", async () => {
@@ -330,6 +368,12 @@ describe("RunManager", () => {
     expect(result.workspace?.base_commit).not.toBe(
       result.workspace?.source_base_commit,
     );
+    expect(result.workspace?.diff_command).toContain(
+      result.workspace!.base_commit!,
+    );
+    expect(result.workspace?.diff_command).not.toContain(
+      result.workspace!.source_base_commit!,
+    );
     expect(result.workspace?.changed_files).not.toContain("context.txt");
     expect(fs.readFileSync(path.join(tmp, "tracked.txt"), "utf8")).toBe(
       "coordinator edit\n",
@@ -355,6 +399,12 @@ describe("RunManager", () => {
     });
     await manager.wait(started.run_id);
 
+    expect(manager.applyChanges(started.run_id, true)).toMatchObject({
+      applied: false,
+    });
+    expect(fs.readFileSync(path.join(tmp, "tracked.txt"), "utf8")).toBe(
+      "base\n",
+    );
     expect(manager.applyChanges(started.run_id)).toMatchObject({
       applied: true,
     });
