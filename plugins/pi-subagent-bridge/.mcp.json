@@ -1,9 +1,10 @@
 {
   "mcpServers": {
     "pi-subagent-bridge": {
+      "cwd": ".",
       "command": "node",
       "args": [
-        "/home/ezana/code/pi-subagent-bridge/plugins/pi-subagent-bridge/server/dist/index.js"
+        "./server/dist/index.js"
       ],
       "env": {
         "PI_BRIDGE_DATA_DIR": "/tmp/pi-subagent-bridge"

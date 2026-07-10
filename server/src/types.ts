@@ -33,7 +33,7 @@ export interface StartRunInput {
   model_id?: string;
   thinking_level?: string;
   session_id?: string;
-  workspace_mode?: "auto" | "worktree" | "direct";
+  workspace_mode?: "auto" | "snapshot" | "clean_head" | "worktree" | "direct";
 }
 
 export interface RunWorkspace {
@@ -44,6 +44,8 @@ export interface RunWorkspace {
   worktree_path?: string;
   branch?: string;
   base_commit?: string;
+  source_base_commit?: string;
+  snapshot_applied?: boolean;
   target_commit?: string;
   artifacts_dir?: string;
   status_path?: string;
@@ -109,4 +111,13 @@ export interface ActiveRun {
   abortSent: boolean;
   forceTimer?: NodeJS.Timeout;
   timeoutTimer?: NodeJS.Timeout;
+}
+
+export interface RunProgressEvent {
+  run_id: string;
+  state: RunState;
+  phase: "starting" | "running" | "tool" | "finishing" | "terminal";
+  elapsed_ms: number;
+  tool_calls_count: number;
+  latest_tool?: string;
 }

@@ -297,6 +297,77 @@ describe("RunManager", () => {
     );
   });
 
+  it("snapshots dirty tracked and untracked coordinator files without returning them as Pi changes", async () => {
+    fs.writeFileSync(path.join(tmp, "tracked.txt"), "base\n");
+    execGit(tmp, ["init"]);
+    execGit(tmp, ["add", "tracked.txt"]);
+    execGit(tmp, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "base",
+    ]);
+    fs.writeFileSync(path.join(tmp, "tracked.txt"), "coordinator edit\n");
+    fs.writeFileSync(path.join(tmp, "context.txt"), "untracked context\n");
+
+    const started = await manager.start({
+      task: "write workspace files",
+      working_directory: tmp,
+    });
+    expect(started.workspace.snapshot_applied).toBe(true);
+    expect(
+      fs.readFileSync(
+        path.join(started.workspace.agent_working_directory, "context.txt"),
+        "utf8",
+      ),
+    ).toBe("untracked context\n");
+    const result = await manager.wait(started.run_id);
+
+    expect(result.workspace?.source_base_commit).toBeDefined();
+    expect(result.workspace?.base_commit).not.toBe(
+      result.workspace?.source_base_commit,
+    );
+    expect(result.workspace?.changed_files).not.toContain("context.txt");
+    expect(fs.readFileSync(path.join(tmp, "tracked.txt"), "utf8")).toBe(
+      "coordinator edit\n",
+    );
+  });
+
+  it("checks and applies an isolated run patch, then discards its worktree", async () => {
+    fs.writeFileSync(path.join(tmp, "tracked.txt"), "base\n");
+    execGit(tmp, ["init"]);
+    execGit(tmp, ["add", "tracked.txt"]);
+    execGit(tmp, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "base",
+    ]);
+    const started = await manager.start({
+      task: "write workspace files",
+      working_directory: tmp,
+    });
+    await manager.wait(started.run_id);
+
+    expect(manager.applyChanges(started.run_id)).toMatchObject({
+      applied: true,
+    });
+    expect(fs.readFileSync(path.join(tmp, "tracked.txt"), "utf8")).toContain(
+      "pi edit",
+    );
+    expect(manager.discardWorkspace(started.run_id)).toEqual({
+      run_id: started.run_id,
+      discarded: true,
+    });
+    expect(fs.existsSync(started.workspace.worktree_path!)).toBe(false);
+  });
+
   it("wraps tasks with coordinator instructions before prompting Pi", async () => {
     const promptFile = path.join(tmp, "prompt.txt");
     process.env.FAKE_PI_PROMPT_FILE = promptFile;
@@ -309,8 +380,12 @@ describe("RunManager", () => {
     await manager.wait(run_id);
 
     const prompt = fs.readFileSync(promptFile, "utf8");
-    expect(prompt).toContain("You are a coding subagent working for a coordinator.");
-    expect(prompt).toContain("Treat the user task below as the authoritative request.");
+    expect(prompt).toContain(
+      "You are a coding subagent working for a coordinator.",
+    );
+    expect(prompt).toContain(
+      "Treat the user task below as the authoritative request.",
+    );
     expect(prompt).toContain("Preserve unrelated user or repository changes.");
     expect(prompt).toContain("Run the most relevant verification available");
     expect(prompt).toContain("User task:\nimplement the requested change");

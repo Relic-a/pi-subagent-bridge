@@ -5,12 +5,16 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 ## What It Provides
 
 - `pi_list_models`: searches Pi's structured RPC model catalog. Pass `query` for focused selection such as `gpt 5.5 reasoning`; the server does not scrape terminal-formatted output.
+- `pi_run`: preferred one-call delegation API. It starts Pi, waits internally, and returns structured result and workspace metadata.
+- `pi_doctor`: checks the Pi executable, bridge state, allowed roots, and git availability.
 - `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session. By default, git-backed workspaces run in an isolated `git worktree`.
 - `pi_wait`: waits for a run to reach `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id` and compact workspace change references. When `timeout_ms` is provided, it may instead return a non-terminal heartbeat with `progress.elapsed_ms` and `progress.tool_calls_count`; call `pi_wait` again with the same `run_id` to continue waiting.
 - `pi_stop`: sends Pi's RPC abort command, waits for the grace period, then terminates the child process group if needed.
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
 - `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.
 - `pi_read_result`: reads an already completed result after an interrupted wait connection, including any Pi `session_id`.
+- `pi_apply_changes`: conflict-checks and applies a completed isolated run's patch to the coordinator checkout.
+- `pi_discard_workspace`: removes a completed run's isolated worktree and branch.
 
 ## Session Continuation
 
@@ -20,7 +24,9 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 
 `pi_start` accepts `workspace_mode`:
 
-- `auto` (default): if `working_directory` is inside a git repo, create an isolated worktree at `<repo>/.pi-subagent-runs/<run_id>` on branch `pi/run-<short-id>`. Outside git repos, run directly in `working_directory`.
+- `auto` (default): create an isolated snapshot worktree containing current tracked and untracked coordinator state. Pi's returned patch contains only changes made after that snapshot.
+- `snapshot`: require the snapshot behavior used by `auto` for git workspaces.
+- `clean_head`: create the isolated worktree from clean `HEAD`, excluding uncommitted coordinator state.
 - `worktree`: require git worktree isolation and fail if `working_directory` is not in a git repo.
 - `direct`: run in `working_directory`.
 
@@ -70,6 +76,13 @@ For marketplace installation testing, build the nested plugin server too:
 cd plugins/pi-subagent-bridge/server
 npm install
 npm run build
+```
+
+The root server and skill directories are canonical. After building, synchronize the installable plugin bundle with:
+
+```bash
+node scripts/sync-plugin.mjs
+node scripts/sync-plugin.mjs --check
 ```
 
 ## Configuration

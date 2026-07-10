@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "pi-subagent-bridge": {
+      "cwd": ".",
       "command": "node",
       "args": [
         "./server/dist/index.js"

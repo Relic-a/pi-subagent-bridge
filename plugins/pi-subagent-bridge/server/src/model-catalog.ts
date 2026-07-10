@@ -61,13 +61,11 @@ export function normalizeModelResponse(response: unknown): ModelInfo[] {
             : modelId,
       reasoning_support: Boolean(
         item.reasoning_support ??
-          item.supports_reasoning ??
-          item.reasoning ??
-          false,
+        item.supports_reasoning ??
+        item.reasoning ??
+        false,
       ),
-      context_window: nullableNumber(
-        item.context_window ?? item.contextWindow,
-      ),
+      context_window: nullableNumber(item.context_window ?? item.contextWindow),
       maximum_output_tokens: nullableNumber(
         item.maximum_output_tokens ?? item.max_output_tokens ?? item.maxTokens,
       ),

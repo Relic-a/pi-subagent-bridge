@@ -83,6 +83,7 @@ export class RunManager {
             session_id: sessionId,
             workspace,
         });
+        this.emitProgress(runId, "starting");
         run.timeoutTimer = setTimeout(() => {
             this.transition(runId, "timed_out", {
                 error: "Pi run exceeded maximum runtime.",
@@ -105,6 +106,7 @@ export class RunManager {
             .then((data) => {
             this.captureSessionId(runId, data);
             this.transition(runId, "running");
+            this.emitProgress(runId, "running");
         })
             .catch((error) => {
             const active = this.active.get(runId);
@@ -233,6 +235,41 @@ export class RunManager {
     recentToolCalls(limit, runId) {
         return this.options.store.recentToolCalls(limit, runId);
     }
+    applyChanges(runId) {
+        const result = this.readResult(runId);
+        const workspace = result.workspace;
+        if (!workspace?.repo_root || !workspace.patch_path)
+            throw new Error("RUN_HAS_NO_ISOLATED_CHANGES");
+        const current = this.git(workspace.repo_root, ["rev-parse", "HEAD"]).trim();
+        if (workspace.target_commit && current !== workspace.target_commit)
+            throw new Error("TARGET_REVISION_CHANGED");
+        this.git(workspace.repo_root, [
+            "apply",
+            "--check",
+            "--binary",
+            workspace.patch_path,
+        ]);
+        this.git(workspace.repo_root, ["apply", "--binary", workspace.patch_path]);
+        return {
+            run_id: runId,
+            applied: true,
+            changed_files: workspace.changed_files ?? [],
+        };
+    }
+    discardWorkspace(runId) {
+        const workspace = this.getRun(runId).workspace;
+        if (!workspace?.repo_root || !workspace.worktree_path)
+            throw new Error("RUN_HAS_NO_ISOLATED_WORKSPACE");
+        this.git(workspace.repo_root, [
+            "worktree",
+            "remove",
+            "--force",
+            workspace.worktree_path,
+        ]);
+        if (workspace.branch)
+            this.git(workspace.repo_root, ["branch", "-D", workspace.branch]);
+        return { run_id: runId, discarded: true };
+    }
     async shutdown() {
         this.shuttingDown = true;
         const runs = [...this.active.values()];
@@ -267,6 +304,7 @@ export class RunManager {
                     ? undefined
                     : redactSecrets(params.arguments ?? params.args),
             });
+            this.emitProgress(runId, "tool", String(params.tool_name ?? params.toolName ?? params.name ?? "unknown"));
         }
         if (name === "session_created" || name === "session_started") {
             const sid = extractSessionId(params);
@@ -279,6 +317,7 @@ export class RunManager {
             }
         }
         if (name === "agent_end") {
+            this.emitProgress(runId, "finishing");
             const active = this.active.get(runId);
             const requestedState = String(params.state ?? params.status ?? "completed");
             const state = active?.state === "stopping"
@@ -311,6 +350,7 @@ export class RunManager {
             });
             if (active)
                 this.killRun(active, "SIGTERM");
+            this.emitProgress(runId, "terminal");
             this.cleanup(runId);
         }
     }
@@ -410,7 +450,7 @@ export class RunManager {
         }
         const git = this.gitContext(cwd);
         if (!git) {
-            if (mode === "worktree") {
+            if (mode === "worktree" || mode === "snapshot" || mode === "clean_head") {
                 throw new Error("workspace_mode=worktree requires a git working tree.");
             }
             return {
@@ -438,6 +478,52 @@ export class RunManager {
             git.baseCommit,
         ]);
         fs.mkdirSync(artifactsDir, { recursive: true });
+        const useSnapshot = mode === "auto" || mode === "snapshot";
+        let snapshotApplied = false;
+        let agentBaseCommit = git.baseCommit;
+        if (useSnapshot) {
+            const dirtyPatch = this.git(git.repoRoot, [
+                "diff",
+                "--binary",
+                "HEAD",
+                "--",
+            ]);
+            if (dirtyPatch.trim()) {
+                const snapshotPatch = path.join(artifactsDir, "coordinator-snapshot.patch");
+                fs.writeFileSync(snapshotPatch, dirtyPatch, "utf8");
+                this.git(worktreePath, ["apply", "--binary", snapshotPatch]);
+                snapshotApplied = true;
+            }
+            const untracked = this.git(git.repoRoot, [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+            ])
+                .split("\n")
+                .map((entry) => entry.trim())
+                .filter(Boolean)
+                .filter((entry) => !entry.startsWith(`${worktreeRootName}/`));
+            for (const relative of untracked) {
+                const source = path.join(git.repoRoot, relative);
+                const target = path.join(worktreePath, relative);
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.copyFileSync(source, target);
+                snapshotApplied = true;
+            }
+            if (snapshotApplied) {
+                this.git(worktreePath, ["add", "-A"]);
+                this.git(worktreePath, [
+                    "-c",
+                    "user.name=Pi Bridge",
+                    "-c",
+                    "user.email=pi-bridge@localhost",
+                    "commit",
+                    "-m",
+                    "chore: snapshot coordinator workspace",
+                ]);
+                agentBaseCommit = this.git(worktreePath, ["rev-parse", "HEAD"]).trim();
+            }
+        }
         const relativeCwd = path.relative(git.repoRoot, cwd);
         const agentCwd = path.join(worktreePath, relativeCwd);
         const patchPath = path.join(artifactsDir, "changes.patch");
@@ -448,7 +534,9 @@ export class RunManager {
             repo_root: git.repoRoot,
             worktree_path: worktreePath,
             branch,
-            base_commit: git.baseCommit,
+            base_commit: agentBaseCommit,
+            source_base_commit: git.baseCommit,
+            snapshot_applied: snapshotApplied,
             target_commit: this.git(git.repoRoot, ["rev-parse", "HEAD"]).trim(),
             artifacts_dir: artifactsDir,
             status_path: path.join(artifactsDir, "status.txt"),
@@ -636,6 +724,22 @@ ${task}`;
     sendAbort(run) {
         return this.clientFor(run).send(this.options.abortMethod, {
             run_id: run.run_id,
+        });
+    }
+    emitProgress(runId, phase, latestTool) {
+        if (!this.options.onProgress)
+            return;
+        const active = this.active.get(runId);
+        if (!active)
+            return;
+        this.options.onProgress({
+            run_id: runId,
+            state: active.state,
+            phase,
+            elapsed_ms: Date.now() - active.startedAtMs,
+            tool_calls_count: this.options.store.recentToolCalls(undefined, runId)
+                .length,
+            latest_tool: latestTool,
         });
     }
     cleanup(runId) {

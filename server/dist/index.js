@@ -15,7 +15,9 @@ const StartSchema = z.object({
     model_id: z.string().optional(),
     thinking_level: z.string().optional(),
     session_id: z.string().optional(),
-    workspace_mode: z.enum(["auto", "worktree", "direct"]).optional(),
+    workspace_mode: z
+        .enum(["auto", "snapshot", "clean_head", "worktree", "direct"])
+        .optional(),
 });
 const RunIdSchema = z.object({ run_id: z.string().uuid() });
 const RecentSchema = z.object({
@@ -43,6 +45,15 @@ const manager = new RunManager({
     worktreeRootName: process.env.PI_BRIDGE_WORKTREE_ROOT_NAME,
     sessionIdFlag: process.env.PI_RPC_SESSION_ID_FLAG ?? "--session-id",
     noSessionFlag: process.env.PI_RPC_NO_SESSION_FLAG,
+    onProgress: (event) => {
+        void server
+            ?.sendLoggingMessage({
+            level: "info",
+            logger: "pi-subagent-bridge",
+            data: event,
+        })
+            .catch(() => undefined);
+    },
 });
 const server = new Server({ name: "pi-subagent-bridge", version: "0.1.0" }, { capabilities: { tools: {} } });
 server.onerror = (error) => {
@@ -55,6 +66,35 @@ server.onerror = (error) => {
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
         {
+            name: "pi_run",
+            description: "Preferred one-call delegation API. Start a Pi coding subagent, wait for completion, and return its answer and structured workspace handoff.",
+            inputSchema: {
+                type: "object",
+                required: ["task", "working_directory"],
+                properties: {
+                    task: { type: "string" },
+                    working_directory: { type: "string" },
+                    provider: { type: "string" },
+                    model_id: { type: "string" },
+                    thinking_level: { type: "string" },
+                    session_id: { type: "string" },
+                    workspace_mode: {
+                        type: "string",
+                        enum: ["auto", "snapshot", "clean_head", "worktree", "direct"],
+                    },
+                },
+                additionalProperties: false,
+            },
+            outputSchema: runResultSchema(),
+            annotations: {
+                title: "Delegate to Pi",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false,
+            },
+        },
+        {
             name: "pi_list_models",
             description: "Search Pi's structured RPC model catalog. Use a focused query when selecting a model; do not scrape terminal output.",
             inputSchema: {
@@ -66,6 +106,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     },
                 },
                 additionalProperties: false,
+            },
+            annotations: {
+                title: "Search Pi models",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
             },
         },
         {
@@ -86,11 +133,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     },
                     workspace_mode: {
                         type: "string",
-                        enum: ["auto", "worktree", "direct"],
+                        enum: ["auto", "snapshot", "clean_head", "worktree", "direct"],
                         description: "Workspace isolation mode. Default auto uses an isolated git worktree when working_directory is in a git repo and returns compact diff/status references instead of inline patches.",
                     },
                 },
                 additionalProperties: false,
+            },
+            annotations: {
+                title: "Start Pi run",
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false,
+            },
+        },
+        {
+            name: "pi_doctor",
+            description: "Check bridge, Pi executable, state directory, allowed roots, and git availability.",
+            inputSchema: {
+                type: "object",
+                properties: {},
+                additionalProperties: false,
+            },
+            outputSchema: {
+                type: "object",
+                properties: { ok: { type: "boolean" }, checks: { type: "array" } },
+                required: ["ok", "checks"],
+            },
+            annotations: {
+                title: "Diagnose Pi bridge",
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
             },
         },
         {
@@ -106,6 +181,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                         description: "Maximum milliseconds to wait before returning a progress heartbeat with state, elapsed_ms, and tool_calls_count. Omit to block until the run completes.",
                     },
                 },
+            },
+        },
+        {
+            name: "pi_apply_changes",
+            description: "Safely apply a completed isolated Pi run's patch after checking the target revision and patch conflicts.",
+            inputSchema: {
+                type: "object",
+                required: ["run_id"],
+                properties: { run_id: { type: "string" } },
+                additionalProperties: false,
+            },
+            annotations: {
+                title: "Apply Pi changes",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false,
+            },
+        },
+        {
+            name: "pi_discard_workspace",
+            description: "Remove a completed Pi run's isolated worktree and branch.",
+            inputSchema: {
+                type: "object",
+                required: ["run_id"],
+                properties: { run_id: { type: "string" } },
+                additionalProperties: false,
+            },
+            annotations: {
+                title: "Discard Pi workspace",
+                readOnlyHint: false,
+                destructiveHint: true,
+                idempotentHint: false,
+                openWorldHint: false,
             },
         },
         {
@@ -153,6 +262,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
         switch (name) {
+            case "pi_run": {
+                const started = await manager.start(StartSchema.parse(args ?? {}));
+                return jsonResult(await manager.wait(started.run_id));
+            }
             case "pi_list_models":
                 return jsonResult(await listModels({
                     executable: process.env.PI_EXECUTABLE ?? "pi",
@@ -162,14 +275,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 }, ModelsSchema.parse(args ?? {}).query));
             case "pi_start":
                 return jsonResult(await manager.start(StartSchema.parse(args ?? {})));
+            case "pi_doctor":
+                return jsonResult(doctor());
             case "pi_wait": {
                 const waitArgs = z
-                    .object({ run_id: z.string().uuid(), timeout_ms: z.number().int().min(1).optional() })
+                    .object({
+                    run_id: z.string().uuid(),
+                    timeout_ms: z.number().int().min(1).optional(),
+                })
                     .parse(args ?? {});
                 return jsonResult(await manager.wait(waitArgs.run_id, waitArgs.timeout_ms));
             }
             case "pi_stop":
                 return jsonResult(await manager.stop(RunIdSchema.parse(args ?? {}).run_id));
+            case "pi_apply_changes":
+                return jsonResult(manager.applyChanges(RunIdSchema.parse(args ?? {}).run_id));
+            case "pi_discard_workspace":
+                return jsonResult(manager.discardWorkspace(RunIdSchema.parse(args ?? {}).run_id));
             case "pi_recent_tool_calls": {
                 const parsed = RecentSchema.parse(args ?? {});
                 return jsonResult(manager.recentToolCalls(parsed.limit, parsed.run_id));
@@ -202,8 +324,69 @@ await server.connect(new StdioServerTransport());
 process.stdin.resume();
 function jsonResult(value) {
     return {
-        content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+        content: [{ type: "text", text: summarizeResult(value) }],
+        structuredContent: value && typeof value === "object" && !Array.isArray(value)
+            ? value
+            : { result: value },
     };
+}
+function summarizeResult(value) {
+    if (value && typeof value === "object" && "state" in value) {
+        const result = value;
+        return [
+            String(result.state ?? "unknown"),
+            result.final_answer,
+            result.error,
+        ]
+            .filter(Boolean)
+            .join("\n\n");
+    }
+    return JSON.stringify(value, null, 2);
+}
+function runResultSchema() {
+    return {
+        type: "object",
+        properties: {
+            run_id: { type: "string" },
+            state: { type: "string" },
+            final_answer: { type: "string" },
+            error: { type: "string" },
+            session_id: { type: "string" },
+            workspace: { type: "object" },
+        },
+        required: ["run_id", "state", "final_answer"],
+    };
+}
+function doctor() {
+    const checks = [];
+    const command = process.env.PI_EXECUTABLE ?? "pi";
+    const executable = command.includes(path.sep)
+        ? fs.existsSync(command)
+        : (process.env.PATH ?? "")
+            .split(path.delimiter)
+            .some((dir) => fs.existsSync(path.join(dir, command)));
+    checks.push({
+        name: "pi_executable",
+        ok: executable,
+        detail: command,
+        code: executable ? undefined : "PI_NOT_FOUND",
+    });
+    checks.push({ name: "state_directory", ok: true, detail: dataDir });
+    checks.push({
+        name: "allowed_roots",
+        ok: true,
+        detail: process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot(),
+    });
+    const git = (process.env.PATH ?? "")
+        .split(path.delimiter)
+        .some((dir) => fs.existsSync(path.join(dir, "git")));
+    checks.push({
+        name: "git",
+        ok: git,
+        detail: git ? "available" : "not found",
+        code: git ? undefined : "GIT_NOT_FOUND",
+    });
+    return { ok: checks.every((check) => check.ok), checks };
 }
 function envInt(name, fallback) {
     const parsed = Number.parseInt(process.env[name] ?? "", 10);
