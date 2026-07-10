@@ -1,11 +1,30 @@
 ---
 name: pi-subagent
-description: Use Pi coding-agent subprocesses through the bundled pi-subagent-bridge MCP server.
+description: Use Pi coding-agent subprocesses only when the user explicitly requests Pi or requests a model unavailable through Codex's built-in subagents.
 ---
 
 # Pi Subagent
 
-Use this skill when the user asks Codex to delegate coding work to Pi, compare Pi models, or inspect Pi sub-agent activity.
+## Routing
+
+Codex's built-in subagent system is the default for delegation. Do not use Pi
+for ordinary task decomposition, parallel work, or coding delegation merely
+because Pi is available.
+
+Use this skill only when one of these conditions is true:
+
+- The user explicitly asks to use Pi, the Pi subagent, the Pi bridge, or a Pi
+  tool/session.
+- The user explicitly requests a model that is not available through Codex's
+  built-in subagent system. Use Pi to access that model.
+
+If neither condition applies, use Codex's built-in subagent system instead.
+If it is unclear whether a requested model is available to Codex's built-in
+subagents, do not assume Pi; use the built-in system unless the user clarifies
+that they want Pi.
+
+Once Pi is selected under the rules above, use this skill to delegate coding
+work, compare Pi models, or inspect Pi subagent activity.
 
 ## Workflow
 
