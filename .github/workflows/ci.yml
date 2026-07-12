@@ -2,11 +2,21 @@ name: CI
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: server
@@ -18,6 +28,23 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run typecheck
       - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
       - run: node ../scripts/sync-plugin.mjs --check
+      - run: node ../scripts/validate-plugin.mjs
+
+  plugin-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/pi-subagent-bridge/server/package-lock.json
+      - run: npm ci --omit=dev
+        working-directory: plugins/pi-subagent-bridge/server
+      - run: node scripts/validate-plugin.mjs --smoke

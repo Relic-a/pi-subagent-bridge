@@ -192,8 +192,8 @@ def handle(message):
                     "tool_call_id": "tool-1",
                     "tool_name": "shell",
                     "arguments": {
-                        "command": "deploy --token sk-testsecret1234567890abcdef",
-                        "password": "hunter2",
+                        "command": "deploy --token synthetic-test-value",
+                        "password": "synthetic-password",
                     },
                 },
             }

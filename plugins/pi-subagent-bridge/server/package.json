@@ -10,6 +10,8 @@
     "test": "vitest run",
     "test:unit": "vitest run test/*.test.ts",
     "test:integration": "vitest run test/*.integration.test.ts",
+    "test:coverage": "vitest run --coverage",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
   },
   "dependencies": {

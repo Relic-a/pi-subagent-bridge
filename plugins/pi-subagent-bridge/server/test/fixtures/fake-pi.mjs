@@ -113,7 +113,7 @@ function handleLine(line) {
         params: {
           tool_call_id: "tool-1",
           tool_name: "shell",
-          arguments: { command: "deploy --token sk-testsecret1234567890abcdef", password: "hunter2" },
+          arguments: { command: "deploy --token synthetic-test-value", password: "synthetic-password" },
         },
       }),
     );

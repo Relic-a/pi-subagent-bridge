@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known synthetic credential used by historical redaction tests"
+regexes = [
+  '''sk-testsecret1234567890abcdef''',
+]
