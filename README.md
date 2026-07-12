@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.1.0. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.1.1. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -101,7 +101,7 @@ node scripts/sync-plugin.mjs --check
 
 Environment variables:
 
-- `PI_EXECUTABLE`: Pi executable path. Default: `pi`.
+- `PI_EXECUTABLE`: optional Pi executable override. By default the bridge detects `pi` on `PATH` and in common user-local install locations, then uses its absolute path.
 - `PI_RPC_ARGS`: override Pi RPC args. Default: `--mode rpc`.
 - `PI_RPC_SESSION_ID_FLAG`: flag used when `pi_start.session_id` is provided. Default: `--session-id`.
 - `PI_RPC_NO_SESSION_FLAG`: optional flag to append for starts without `session_id`. Leave unset for persistent Pi sessions; set to `--no-session` to force ephemeral sessions.
@@ -118,9 +118,14 @@ Environment variables:
 - `PI_BRIDGE_MAX_CONCURRENT_RUNS`: default `4`; additional starts fail with `RUN_CONCURRENCY_LIMIT`.
 - `PI_BRIDGE_KILL_GRACE_MS`: delay between terminal `SIGTERM` and fallback `SIGKILL`. Default: `500`.
 - `PI_BRIDGE_MODEL_CACHE_TTL_MS`: model catalog cache TTL. Default: `60000`.
+
 - `PI_RPC_REQUEST_TIMEOUT_MS`: timeout for an individual RPC request. Default: `120000`.
 - `PI_RPC_IGNORE_NON_JSON_NOISE`: set to `1` to ignore non-JSON stdout lines instead of failing the run.
 - `PI_BRIDGE_MAX_SNAPSHOT_FILE_BYTES`: maximum copied untracked-file size. Default: `10485760`; `.env*` and common private-key files are always skipped.
+
+The bridge detects the active Node.js executable from the running process and adds
+its directory to the environment used to launch Pi. `pi_doctor` reports the
+resolved Node.js and Pi executable paths.
 - `PI_BRIDGE_REDACT_FINAL_ANSWERS`: set to `1` to redact likely secrets before persisting final answers. Returned live answers are unchanged.
 - `PI_BRIDGE_AUTO_DISCARD_AFTER_APPLY`: set to `1` to remove a worktree after its patch applies successfully.
 

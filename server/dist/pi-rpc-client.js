@@ -8,9 +8,17 @@ export class PiRpcClient {
     pending = new Map();
     constructor(options) {
         this.options = options;
+        const nodeDirectory = process.execPath.replace(/[\\/][^\\/]+$/, "");
+        const inheritedPath = options.env?.PATH ?? process.env.PATH ?? "";
+        const childPath = [
+            nodeDirectory,
+            ...inheritedPath
+                .split(process.platform === "win32" ? ";" : ":")
+                .filter((entry) => entry && entry !== nodeDirectory),
+        ].join(process.platform === "win32" ? ";" : ":");
         this.child = spawn(options.executable, options.args ?? ["--mode", "rpc"], {
             cwd: options.cwd,
-            env: { ...process.env, ...options.env },
+            env: { ...process.env, ...options.env, PATH: childPath },
             detached: true,
             stdio: ["pipe", "pipe", "pipe"],
         });

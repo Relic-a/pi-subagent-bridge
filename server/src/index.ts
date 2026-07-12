@@ -10,6 +10,7 @@ import {
 import { z } from "zod";
 import { listModels } from "./model-catalog.js";
 import { RunManager } from "./run-manager.js";
+import { discoverRuntime, findExecutable } from "./runtime-discovery.js";
 import { ToolCallStore } from "./tool-call-store.js";
 
 const StartSchema = z.object({
@@ -31,13 +32,14 @@ const RecentSchema = z.object({
 const ModelsSchema = z.object({ query: z.string().optional() });
 
 const dataDir = prepareDataDir();
+const runtime = discoverRuntime();
 const store = new ToolCallStore(path.join(dataDir, "state.sqlite"), {
   maxToolCalls: envInt("PI_BRIDGE_MAX_TOOL_CALLS", 1000),
   maxRuns: envInt("PI_BRIDGE_MAX_RUNS", 200),
 });
 const manager = new RunManager({
   store,
-  piExecutable: process.env.PI_EXECUTABLE ?? "pi",
+  piExecutable: runtime.piExecutable,
   piArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
   piSessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
   allowedRoots: (process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot())
@@ -65,7 +67,7 @@ const manager = new RunManager({
 });
 
 const server = new Server(
-  { name: "pi-subagent-bridge", version: "0.1.0" },
+  { name: "pi-subagent-bridge", version: "0.1.1" },
   { capabilities: { tools: {} } },
 );
 server.onerror = (error) => {
@@ -334,7 +336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return jsonResult(
           await listModels(
             {
-              executable: process.env.PI_EXECUTABLE ?? "pi",
+              executable: runtime.piExecutable,
               rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
               timeoutMs: envInt("PI_BRIDGE_MODEL_LIST_TIMEOUT_MS", 15000),
               modelListMethod:
@@ -492,12 +494,13 @@ async function doctor() {
     detail: string;
     code?: string;
   }> = [];
-  const command = process.env.PI_EXECUTABLE ?? "pi";
-  const executable = command.includes(path.sep)
-    ? fs.existsSync(command)
-    : (process.env.PATH ?? "")
-        .split(path.delimiter)
-        .some((dir) => fs.existsSync(path.join(dir, command)));
+  checks.push({
+    name: "node_executable",
+    ok: true,
+    detail: runtime.nodeExecutable,
+  });
+  const command = runtime.piExecutable;
+  const executable = runtime.piFound;
   checks.push({
     name: "pi_executable",
     ok: executable,
@@ -534,13 +537,12 @@ async function doctor() {
     ok: true,
     detail: process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot(),
   });
-  const git = (process.env.PATH ?? "")
-    .split(path.delimiter)
-    .some((dir) => fs.existsSync(path.join(dir, "git")));
+  const gitPath = findExecutable("git", runtime.env.PATH, runtime.env);
+  const git = gitPath !== undefined;
   checks.push({
     name: "git",
     ok: git,
-    detail: git ? "available" : "not found",
+    detail: gitPath ?? "not found",
     code: git ? undefined : "GIT_NOT_FOUND",
   });
   return { ok: checks.every((check) => check.ok), checks };
