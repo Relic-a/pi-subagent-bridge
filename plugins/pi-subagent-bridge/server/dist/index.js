@@ -60,7 +60,7 @@ const manager = new RunManager({
             .catch(() => undefined);
     },
 });
-const server = new Server({ name: "pi-subagent-bridge", version: "0.1.1" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "pi-subagent-bridge", version: "0.2.1" }, { capabilities: { tools: {} } });
 server.onerror = (error) => {
     console.error(JSON.stringify({
         level: "error",
@@ -522,7 +522,7 @@ function prepareDataDir() {
     throw new Error(`No writable Pi bridge data directory found: ${errors.join("; ")}`);
 }
 function defaultAllowedRoot() {
-    return process.cwd();
+    return os.homedir();
 }
 async function shutdown(code) {
     clearInterval(keepAlive);

@@ -63,6 +63,7 @@ if (process.argv.includes("--smoke")) {
     try {
       const response = JSON.parse(result.stdout);
       if (response.result?.serverInfo?.name !== "pi-subagent-bridge") errors.push("plugin smoke test returned the wrong server");
+      if (response.result?.serverInfo?.version !== manifest.version) errors.push("plugin smoke test returned the wrong version");
     } catch {
       errors.push("plugin smoke test returned invalid JSON");
     }

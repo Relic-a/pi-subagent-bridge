@@ -67,7 +67,7 @@ const manager = new RunManager({
 });
 
 const server = new Server(
-  { name: "pi-subagent-bridge", version: "0.1.1" },
+  { name: "pi-subagent-bridge", version: "0.2.1" },
   { capabilities: { tools: {} } },
 );
 server.onerror = (error) => {
@@ -589,7 +589,7 @@ function prepareDataDir(): string {
 }
 
 function defaultAllowedRoot(): string {
-  return process.cwd();
+  return os.homedir();
 }
 
 async function shutdown(code: number): Promise<void> {

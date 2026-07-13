@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.2.0. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.2.1. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -104,7 +104,7 @@ Environment variables:
 - `PI_RPC_MODEL_LIST_METHOD`: default `get_available_models`.
 - `PI_RPC_START_METHOD`: default `prompt`.
 - `PI_RPC_ABORT_METHOD`: default `abort`.
-- `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: MCP server cwd.
+- `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: the current user's home directory.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
 - `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `$XDG_STATE_HOME/pi-subagent-bridge`, then `$HOME/.local/state/pi-subagent-bridge`, with the OS temporary directory as a fallback.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.

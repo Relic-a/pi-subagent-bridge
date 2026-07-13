@@ -29,12 +29,28 @@ if (!version) {
   process.exit(0);
 }
 
+// Native dependencies must be loaded by the same Node ABI that npm used to
+// install this package. Codex may have a different, older `node` on its PATH.
+configurePluginRuntime();
+
 // Re-adding the same local source is harmless on some Codex versions and an
 // error on others. Remove only this package's named source to stay idempotent.
 run("codex", ["plugin", "marketplace", "remove", marketplaceName, "--json"], { optional: true, quiet: true });
 run("codex", ["plugin", "marketplace", "add", root, "--json"]);
 run("codex", ["plugin", "add", selector, "--json"]);
 console.log(`pi-subagent-bridge: installed ${selector}. Start a new Codex thread to load it.`);
+
+function configurePluginRuntime() {
+  const manifestPath = path.join(root, "plugins", "pi-subagent-bridge", ".mcp.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const server = manifest.mcpServers?.["pi-subagent-bridge"];
+  if (!server) {
+    console.error("pi-subagent-bridge: plugin MCP configuration is missing.");
+    process.exit(1);
+  }
+  server.command = fs.realpathSync(process.execPath);
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
 
 function run(executable, args, options = {}) {
   const result = spawnSync(executable, args, { encoding: "utf8", stdio: options.quiet ? "ignore" : "pipe" });
