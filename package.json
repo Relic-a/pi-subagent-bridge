@@ -13,6 +13,7 @@
     "plugins/pi-subagent-bridge/server/dist",
     "plugins/pi-subagent-bridge/server/package.json",
     "plugins/pi-subagent-bridge/skills",
+    "scripts/install-context.mjs",
     "scripts/install.mjs",
     "README.md",
     "LICENSE",
@@ -21,7 +22,7 @@
   "scripts": {
     "build": "npm run build --prefix server && node scripts/sync-plugin.mjs",
     "postinstall": "node scripts/install.mjs --postinstall",
-    "test:critical": "npm run typecheck --prefix server && npm run test:unit --prefix server && node scripts/sync-plugin.mjs --check && node scripts/validate-plugin.mjs --smoke",
+    "test:critical": "node --test scripts/*.test.mjs && npm run typecheck --prefix server && npm run test:unit --prefix server && node scripts/sync-plugin.mjs --check && node scripts/validate-plugin.mjs --smoke",
     "prepack": "npm run build && npm run test:critical",
     "release:check": "npm pack --dry-run",
     "install:codex": "node scripts/install.mjs install"
