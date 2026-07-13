@@ -13,17 +13,17 @@ export function discoverRuntime(
   env: NodeJS.ProcessEnv = process.env,
 ): RuntimeDiscovery {
   const nodeExecutable = fs.realpathSync(process.execPath);
-  const searchPath = prependPath(env.PATH, path.dirname(nodeExecutable));
   const requestedPi = env.PI_EXECUTABLE?.trim() || "pi";
-  const resolvedPi =
-    findExecutable(requestedPi, env.PATH ?? "", env) ??
-    findExecutable(requestedPi, searchPath, env);
+  const resolvedPi = findExecutable(requestedPi, env.PATH ?? "", env);
 
   return {
     nodeExecutable,
     piExecutable: resolvedPi ?? requestedPi,
     piFound: resolvedPi !== undefined,
-    env: { ...env, PATH: searchPath },
+    // Pi's launcher can select its own Node runtime with `#!/usr/bin/env
+    // node`. Keep the environment that located Pi intact; the Node process
+    // hosting this MCP server is not necessarily compatible with Pi.
+    env: { ...env },
   };
 }
 
@@ -56,14 +56,6 @@ export function findExecutable(
     if (found) return found;
   }
   return undefined;
-}
-
-function prependPath(current: string | undefined, directory: string): string {
-  const entries = (current ?? "").split(path.delimiter).filter(Boolean);
-  return [
-    directory,
-    ...entries.filter((entry) => path.resolve(entry) !== directory),
-  ].join(path.delimiter);
 }
 
 function executablePath(

@@ -43,6 +43,7 @@ export interface RunManagerOptions {
   store: ToolCallStore;
   piExecutable: string;
   piArgs?: string[];
+  piEnv?: NodeJS.ProcessEnv;
   piSessionDir?: string;
   allowedRoots: string[];
   maxRuntimeMs: number;
@@ -96,8 +97,10 @@ export class RunManager {
       executable: this.options.piExecutable,
       args: this.argsFor(input),
       cwd: agentCwd,
+      env: this.options.piEnv,
       onEvent: (event) => this.handleEvent(runId, event),
-      onExit: (code, signal) => this.handleExit(runId, code, signal),
+      onExit: (code, signal, error) =>
+        this.handleExit(runId, code, signal, error),
       onMalformedLine: (line) => {
         this.failRun(runId, `Malformed Pi JSONL output: ${line.slice(0, 160)}`);
       },
@@ -434,6 +437,7 @@ export class RunManager {
     runId: string,
     code: number | null,
     signal: NodeJS.Signals | null,
+    exitError?: Error,
   ): void {
     if (this.shuttingDown) return;
     const active = this.active.get(runId);
@@ -446,7 +450,9 @@ export class RunManager {
     if (active.state === "stopping") {
       this.finalizeOnce(runId, "stopped", "", undefined, sessionId, false);
     } else {
-      const error = `Pi process exited unexpectedly: code=${code} signal=${signal}`;
+      const error =
+        exitError?.message ??
+        `Pi process exited unexpectedly: code=${code} signal=${signal}`;
       this.finalizeOnce(runId, "failed", "", error, sessionId, false);
     }
     this.cleanup(runId);
@@ -864,9 +870,11 @@ ${task}`;
   private sessionDirsFor(cwd: string): string[] {
     const root =
       this.options.piSessionDir ??
+      this.options.piEnv?.PI_CODING_AGENT_SESSION_DIR ??
       process.env.PI_CODING_AGENT_SESSION_DIR ??
       path.join(
-        process.env.PI_CODING_AGENT_DIR ??
+        this.options.piEnv?.PI_CODING_AGENT_DIR ??
+          process.env.PI_CODING_AGENT_DIR ??
           path.join(process.env.HOME ?? "", ".pi", "agent"),
         "sessions",
       );

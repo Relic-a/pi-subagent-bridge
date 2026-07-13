@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe("runtime discovery", () => {
-  it("resolves Pi from PATH and detects the running Node executable", () => {
+  it("resolves Pi from PATH without changing Pi's launcher environment", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-discovery-"));
     temporaryDirectories.push(directory);
     const pi = path.join(directory, "pi");
@@ -23,9 +23,7 @@ describe("runtime discovery", () => {
     expect(runtime.piExecutable).toBe(fs.realpathSync(pi));
     expect(runtime.piFound).toBe(true);
     expect(runtime.nodeExecutable).toBe(fs.realpathSync(process.execPath));
-    expect(runtime.env.PATH?.split(path.delimiter)[0]).toBe(
-      path.dirname(fs.realpathSync(process.execPath)),
-    );
+    expect(runtime.env.PATH).toBe(directory);
   });
 
   it("honors an explicit PI_EXECUTABLE path", () => {

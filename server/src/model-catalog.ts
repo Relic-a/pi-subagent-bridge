@@ -4,6 +4,8 @@ import type { ModelInfo } from "./types.js";
 export interface ModelCatalogOptions {
   executable: string;
   rpcArgs?: string[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
   timeoutMs: number;
   modelListMethod: string;
   cacheTtlMs?: number;
@@ -18,6 +20,10 @@ export async function listModels(
   const cacheKey = JSON.stringify([
     options.executable,
     options.rpcArgs,
+    options.cwd,
+    options.env?.PATH,
+    options.env?.PI_CODING_AGENT_DIR,
+    options.env?.PI_CODING_AGENT_SESSION_DIR,
     options.modelListMethod,
   ]);
   const cached = cache.get(cacheKey);
@@ -30,6 +36,8 @@ export async function listModels(
   const client = new PiRpcClient({
     executable: options.executable,
     args: options.rpcArgs,
+    cwd: options.cwd,
+    env: options.env,
   });
   const timer = setTimeout(
     () => client.terminate("SIGTERM"),

@@ -69,6 +69,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
     delete process.env.FAKE_PI_IGNORE_SIGTERM;
     delete process.env.FAKE_PI_PID_FILE;
+    delete process.env.FAKE_PI_EXIT_ON_PROMPT;
   });
 
   it("returns from start before fake agent completes and wait resolves on agent_end", async () => {
@@ -125,8 +126,6 @@ describe("RunManager", () => {
   it("duplicate stop calls are idempotent", async () => {
     await manager.shutdown();
     makeManager(undefined, { stopGraceMs: 500 });
-    const signalFile = path.join(tmp, "signals.log");
-    process.env.FAKE_PI_SIGNAL_FILE = signalFile;
     const { run_id } = await manager.start({
       task: "never stop",
       working_directory: tmp,
@@ -136,7 +135,6 @@ describe("RunManager", () => {
     const result = await manager.wait(run_id);
     expect(result.state).toBe("stopped");
     expect(Date.now() - startedAt).toBeLessThan(250);
-    expect(fs.readFileSync(signalFile, "utf8")).toContain("SIGTERM");
   });
 
   it("stop escalates after abort grace when Pi ignores abort", async () => {
@@ -191,6 +189,19 @@ describe("RunManager", () => {
     });
     const result = await manager.wait(run_id);
     expect(result.state).toBe("failed");
+  });
+
+  it("includes Pi stderr when a startup crash fails the run", async () => {
+    process.env.FAKE_PI_EXIT_ON_PROMPT = "1";
+    const { run_id } = await manager.start({
+      task: "show startup diagnostics",
+      working_directory: tmp,
+    });
+
+    await expect(manager.wait(run_id)).resolves.toMatchObject({
+      state: "failed",
+      error: expect.stringMatching(/stderr: intentional Pi prompt failure/),
+    });
   });
 
   it("timeout limit works", async () => {

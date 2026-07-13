@@ -28,6 +28,7 @@ const RecentSchema = z.object({
 const ModelsSchema = z.object({ query: z.string().optional() });
 const dataDir = prepareDataDir();
 const runtime = discoverRuntime();
+const piEnv = preparePiEnvironment(runtime.env, dataDir);
 const store = new ToolCallStore(path.join(dataDir, "state.sqlite"), {
     maxToolCalls: envInt("PI_BRIDGE_MAX_TOOL_CALLS", 1000),
     maxRuns: envInt("PI_BRIDGE_MAX_RUNS", 200),
@@ -36,7 +37,8 @@ const manager = new RunManager({
     store,
     piExecutable: runtime.piExecutable,
     piArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
-    piSessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
+    piEnv,
+    piSessionDir: piEnv.PI_CODING_AGENT_SESSION_DIR,
     allowedRoots: (process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot())
         .split(path.delimiter)
         .filter(Boolean),
@@ -60,7 +62,7 @@ const manager = new RunManager({
             .catch(() => undefined);
     },
 });
-const server = new Server({ name: "pi-subagent-bridge", version: "0.2.2" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "pi-subagent-bridge", version: "0.2.3" }, { capabilities: { tools: {} } });
 server.onerror = (error) => {
     console.error(JSON.stringify({
         level: "error",
@@ -309,6 +311,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return jsonResult(await listModels({
                     executable: runtime.piExecutable,
                     rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
+                    cwd: dataDir,
+                    env: piEnv,
                     timeoutMs: envInt("PI_BRIDGE_MODEL_LIST_TIMEOUT_MS", 15000),
                     modelListMethod: process.env.PI_RPC_MODEL_LIST_METHOD ?? "get_available_models",
                     cacheTtlMs: envInt("PI_BRIDGE_MODEL_CACHE_TTL_MS", 60_000),
@@ -454,6 +458,8 @@ async function doctor() {
             const result = await listModels({
                 executable: command,
                 rpcArgs: splitArgs(process.env.PI_RPC_ARGS) ?? ["--mode", "rpc"],
+                cwd: dataDir,
+                env: piEnv,
                 timeoutMs: 5000,
                 modelListMethod: process.env.PI_RPC_MODEL_LIST_METHOD ?? "get_available_models",
                 cacheTtlMs: 5000,
@@ -520,6 +526,17 @@ function prepareDataDir() {
         }
     }
     throw new Error(`No writable Pi bridge data directory found: ${errors.join("; ")}`);
+}
+function preparePiEnvironment(env, bridgeDataDir) {
+    const agentDir = env.PI_CODING_AGENT_DIR ?? path.join(bridgeDataDir, "pi-agent");
+    const sessionDir = env.PI_CODING_AGENT_SESSION_DIR ?? path.join(agentDir, "sessions");
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(sessionDir, { recursive: true });
+    return {
+        ...env,
+        PI_CODING_AGENT_DIR: agentDir,
+        PI_CODING_AGENT_SESSION_DIR: sessionDir,
+    };
 }
 function defaultAllowedRoot() {
     return os.homedir();

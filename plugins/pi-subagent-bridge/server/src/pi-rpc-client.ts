@@ -14,7 +14,11 @@ export interface PiClientOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   onEvent?: (event: RpcEvent) => void;
-  onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+  onExit?: (
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    error?: Error,
+  ) => void;
   onMalformedLine?: (line: string) => void;
   requestTimeoutMs?: number;
   ignoreNonJsonNoise?: boolean;
@@ -24,6 +28,7 @@ export class PiRpcClient {
   readonly child: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private exited = false;
+  private stderrTail = "";
   private pending = new Map<
     string,
     {
@@ -34,22 +39,17 @@ export class PiRpcClient {
   >();
 
   constructor(private options: PiClientOptions) {
-    const nodeDirectory = process.execPath.replace(/[\\/][^\\/]+$/, "");
     const inheritedPath = options.env?.PATH ?? process.env.PATH ?? "";
-    const childPath = [
-      nodeDirectory,
-      ...inheritedPath
-        .split(process.platform === "win32" ? ";" : ":")
-        .filter((entry) => entry && entry !== nodeDirectory),
-    ].join(process.platform === "win32" ? ";" : ":");
     this.child = spawn(options.executable, options.args ?? ["--mode", "rpc"], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env, PATH: childPath },
+      env: { ...process.env, ...options.env, PATH: inheritedPath },
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk) => {
-      for (const line of String(chunk).split(/\r?\n/).filter(Boolean)) {
+      const output = String(chunk);
+      this.stderrTail = `${this.stderrTail}${output}`.slice(-16 * 1024);
+      for (const line of output.split(/\r?\n/).filter(Boolean)) {
         process.stderr.write(`[pi-rpc] ${line}\n`);
       }
     });
@@ -60,20 +60,17 @@ export class PiRpcClient {
         pending.reject(error);
       }
       this.pending.clear();
-      options.onExit?.(null, null);
+      options.onExit?.(null, null, error);
     });
     this.child.on("exit", (code, signal) => {
       this.exited = true;
+      const error = new Error(this.exitErrorMessage(code, signal));
       for (const pending of this.pending.values()) {
         if (pending.timer) clearTimeout(pending.timer);
-        pending.reject(
-          new Error(
-            `Pi RPC process exited before response: code=${code} signal=${signal}`,
-          ),
-        );
+        pending.reject(error);
       }
       this.pending.clear();
-      options.onExit?.(code, signal);
+      options.onExit?.(code, signal, error);
     });
 
     const lines = createInterface({ input: this.child.stdout });
@@ -169,5 +166,14 @@ export class PiRpcClient {
     }
 
     this.options.onEvent?.(message);
+  }
+
+  private exitErrorMessage(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): string {
+    const message = `Pi RPC process exited before response: code=${code} signal=${signal}`;
+    const stderr = this.stderrTail.trim();
+    return stderr ? `${message}\nstderr: ${stderr}` : message;
   }
 }

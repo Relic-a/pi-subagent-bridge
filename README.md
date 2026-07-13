@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.2.2. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.2.3. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -107,6 +107,7 @@ Environment variables:
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: the current user's home directory.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
 - `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `$XDG_STATE_HOME/pi-subagent-bridge`, then `$HOME/.local/state/pi-subagent-bridge`, with the OS temporary directory as a fallback.
+- `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR`: optional Pi state overrides. When unset, the bridge uses writable directories under `PI_BRIDGE_DATA_DIR` for every Pi invocation, including model discovery.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.
 - `PI_BRIDGE_STOP_GRACE_MS`: default `5000`.
 - `PI_BRIDGE_MAX_TOOL_CALLS`: default `1000`.
@@ -119,9 +120,9 @@ Environment variables:
 - `PI_RPC_IGNORE_NON_JSON_NOISE`: set to `1` to ignore non-JSON stdout lines instead of failing the run.
 - `PI_BRIDGE_MAX_SNAPSHOT_FILE_BYTES`: maximum copied untracked-file size. Default: `10485760`; `.env*` and common private-key files are always skipped.
 
-The bridge detects the active Node.js executable from the running process and adds
-its directory to the environment used to launch Pi. `pi_doctor` reports the
-resolved Node.js and Pi executable paths.
+The bridge preserves the environment that found Pi when launching it, so a Pi
+launcher using `#!/usr/bin/env node` can select its compatible bundled Node.js
+runtime. `pi_doctor` reports the resolved Node.js and Pi executable paths.
 - `PI_BRIDGE_REDACT_FINAL_ANSWERS`: set to `1` to redact likely secrets before persisting final answers. Returned live answers are unchanged.
 - `PI_BRIDGE_AUTO_DISCARD_AFTER_APPLY`: set to `1` to remove a worktree after its patch applies successfully.
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-subagent-bridge",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Codex plugin for running isolated Pi coding-agent subprocesses through MCP.",
   "type": "module",
   "bin": {

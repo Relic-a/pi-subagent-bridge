@@ -23,6 +23,18 @@ args_file = os.environ.get("FAKE_PI_ARGS_FILE")
 if args_file:
     with open(args_file, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(args) + "\n")
+env_file = os.environ.get("FAKE_PI_ENV_FILE")
+if env_file:
+    with open(env_file, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "cwd": os.getcwd(),
+                "path": os.environ.get("PATH"),
+                "agent_dir": os.environ.get("PI_CODING_AGENT_DIR"),
+                "session_dir": os.environ.get("PI_CODING_AGENT_SESSION_DIR"),
+            },
+            fh,
+        )
 
 session_id = _session_id if _session_id else f"session-{os.getpid()}-{int(time.time() * 1000)}"
 if not _session_id and os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") == "1":
@@ -99,6 +111,9 @@ def agent_end_later(delay):
 def handle(message):
     global aborted, active_timer
     if message.get("type") == "get_available_models":
+        if os.environ.get("FAKE_PI_EXIT_ON_MODELS") == "1":
+            print("intentional Pi startup failure", file=sys.stderr, flush=True)
+            os._exit(7)
         if os.environ.get("FAKE_PI_MALFORMED_MODELS") == "1":
             emit(
                 {
@@ -145,6 +160,9 @@ def handle(message):
     if message.get("type") == "prompt":
         global _session_emitted
         text = message.get("message", "")
+        if os.environ.get("FAKE_PI_EXIT_ON_PROMPT") == "1":
+            print("intentional Pi prompt failure", file=sys.stderr, flush=True)
+            os._exit(7)
         prompt_file = os.environ.get("FAKE_PI_PROMPT_FILE")
         if prompt_file:
             with open(prompt_file, "w", encoding="utf-8") as fh:
