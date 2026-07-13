@@ -6,14 +6,19 @@ import process from "node:process";
 const root = path.resolve(import.meta.dirname, "..");
 const plugin = path.join(root, "plugins", "pi-subagent-bridge");
 const manifestPath = path.join(plugin, ".codex-plugin", "plugin.json");
+const localManifestPath = path.join(root, ".codex-plugin", "plugin.json");
 const marketplacePath = path.join(root, ".agents", "plugins", "marketplace.json");
+const packagePath = path.join(root, "package.json");
 const errors = [];
 
 const manifest = readJson(manifestPath);
+const localManifest = readJson(localManifestPath);
 const marketplace = readJson(marketplacePath);
+const packageJson = readJson(packagePath);
 const requiredFiles = [
   "LICENSE",
   "README.md",
+  "npm-shrinkwrap.json",
   ".agents/plugins/marketplace.json",
   "plugins/pi-subagent-bridge/.codex-plugin/plugin.json",
   "plugins/pi-subagent-bridge/.mcp.json",
@@ -27,6 +32,8 @@ for (const file of requiredFiles) {
 }
 
 if (manifest.name !== "pi-subagent-bridge") errors.push("manifest name must match plugin directory");
+if (manifest.version !== packageJson.version) errors.push("plugin and npm package versions must match");
+if (localManifest.version !== packageJson.version) errors.push("local plugin and npm package versions must match");
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(manifest.version ?? "")) {
   errors.push("manifest version must be valid semver");
 }

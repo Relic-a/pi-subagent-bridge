@@ -6,6 +6,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { isGlobalInstall } from "./install-context.mjs";
+import { discoverRuntime } from "../plugins/pi-subagent-bridge/server/dist/runtime-discovery.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const marketplace = JSON.parse(
@@ -18,46 +19,104 @@ const marketplaceName = marketplace.name;
 const selector = `pi-subagent-bridge@${marketplaceName}`;
 const command = process.argv[2] ?? "install";
 
-if (command === "--postinstall" && !isGlobalInstall({ packageRoot: root })) {
-  console.log(
-    "pi-subagent-bridge: run `npx pi-subagent-bridge install` to install the Codex plugin.",
+try {
+  install();
+} catch (error) {
+  console.error(
+    `pi-subagent-bridge: ${error instanceof Error ? error.message : String(error)}`,
   );
-  process.exit(0);
+  process.exit(1);
 }
 
-if (!["install", "--postinstall"].includes(command)) {
-  console.error("Usage: pi-subagent-bridge [install]");
-  process.exit(2);
-}
+function install() {
+  if (command === "--postinstall" && !isGlobalInstall({ packageRoot: root })) {
+    console.log(
+      "pi-subagent-bridge: run `npx pi-subagent-bridge install` to install the Codex plugin.",
+    );
+    return;
+  }
 
-if (process.env.CODEX_HOME)
-  fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+  if (!["install", "--postinstall"].includes(command)) {
+    throw new Error("Usage: pi-subagent-bridge [install]");
+  }
 
-const version = run("codex", ["--version"], {
-  optional: command === "--postinstall",
-});
-if (!version) {
+  if (process.env.CODEX_HOME)
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+
+  const version = run("codex", ["--version"], {
+    optional: command === "--postinstall",
+  });
+  if (!version) {
+    console.log(
+      "pi-subagent-bridge: Codex was not found; after installing Codex, run `pi-subagent-bridge install`.",
+    );
+    return;
+  }
+
+  reportPi();
+  configurePluginRuntime();
+  installMarketplace();
   console.log(
-    "pi-subagent-bridge: Codex was not found; after installing Codex, run `pi-subagent-bridge install`.",
+    `pi-subagent-bridge: installed ${selector}. Start a new Codex thread to load it.`,
   );
-  process.exit(0);
 }
 
-// Native dependencies must be loaded by the same Node ABI that npm used to
-// install this package. Codex may have a different, older `node` on its PATH.
-configurePluginRuntime();
+function reportPi() {
+  const runtime = discoverRuntime();
+  if (runtime.piFound) {
+    console.log(`pi-subagent-bridge: Pi executable: ${runtime.piExecutable}`);
+    return;
+  }
+  console.warn(
+    "pi-subagent-bridge: Pi was not found. Install it with `npm install --global @earendil-works/pi-coding-agent` or set PI_EXECUTABLE, then run `pi-subagent-bridge install`.",
+  );
+}
 
-// Re-adding the same local source is harmless on some Codex versions and an
-// error on others. Remove only this package's named source to stay idempotent.
-run("codex", ["plugin", "marketplace", "remove", marketplaceName, "--json"], {
-  optional: true,
-  quiet: true,
-});
-run("codex", ["plugin", "marketplace", "add", root, "--json"]);
-run("codex", ["plugin", "add", selector, "--json"]);
-console.log(
-  `pi-subagent-bridge: installed ${selector}. Start a new Codex thread to load it.`,
-);
+function installMarketplace() {
+  const previousSource = marketplaceSource();
+  try {
+    run(
+      "codex",
+      ["plugin", "marketplace", "remove", marketplaceName, "--json"],
+      {
+        optional: true,
+        quiet: true,
+      },
+    );
+    run("codex", ["plugin", "marketplace", "add", root, "--json"]);
+    run("codex", ["plugin", "add", selector, "--json"]);
+  } catch (error) {
+    restoreMarketplace(previousSource);
+    throw error;
+  }
+}
+
+function marketplaceSource() {
+  const output = run("codex", ["plugin", "marketplace", "list", "--json"], {
+    optional: true,
+  });
+  if (!output) return undefined;
+  try {
+    const marketplace = JSON.parse(output).marketplaces?.find(
+      (entry) => entry.name === marketplaceName,
+    );
+    return marketplace?.marketplaceSource?.source ?? marketplace?.root;
+  } catch {
+    return undefined;
+  }
+}
+
+function restoreMarketplace(source) {
+  if (!source) return;
+  run("codex", ["plugin", "marketplace", "remove", marketplaceName, "--json"], {
+    optional: true,
+    quiet: true,
+  });
+  run("codex", ["plugin", "marketplace", "add", source, "--json"], {
+    optional: true,
+  });
+  run("codex", ["plugin", "add", selector, "--json"], { optional: true });
+}
 
 function configurePluginRuntime() {
   const pluginRoot = path.join(root, "plugins", "pi-subagent-bridge");
@@ -87,16 +146,11 @@ function run(executable, args, options = {}) {
   });
   if (result.status === 0) return result.stdout?.trim() || "ok";
   if (options.optional) return "";
-  if (result.error?.code === "ENOENT") {
-    console.error(
-      `pi-subagent-bridge: required command not found: ${executable}`,
-    );
-  } else {
-    console.error(
-      result.stderr?.trim() ||
-        result.stdout?.trim() ||
-        `${executable} exited with status ${result.status}`,
-    );
-  }
-  process.exit(result.status || 1);
+  if (result.error?.code === "ENOENT")
+    throw new Error(`required command not found: ${executable}`);
+  throw new Error(
+    result.stderr?.trim() ||
+      result.stdout?.trim() ||
+      `${executable} exited with status ${result.status}`,
+  );
 }

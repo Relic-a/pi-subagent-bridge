@@ -1,6 +1,6 @@
 {
   "name": "pi-subagent-bridge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Manage isolated Pi coding-agent subprocesses from Codex through a local MCP server.",
   "author": {
     "name": "Relic-a",

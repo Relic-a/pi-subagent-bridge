@@ -26,6 +26,21 @@ describe("runtime discovery", () => {
     expect(runtime.env.PATH).toBe(directory);
   });
 
+  it("puts a fallback Pi bin directory first for env-based launchers", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-discovery-"));
+    temporaryDirectories.push(home);
+    const bin = path.join(home, ".local", "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "pi"), "#!/usr/bin/env node\n", {
+      mode: 0o755,
+    });
+
+    const runtime = discoverRuntime({ PATH: "/usr/bin", HOME: home });
+
+    expect(runtime.piFound).toBe(true);
+    expect(runtime.env.PATH).toBe(`${bin}${path.delimiter}/usr/bin`);
+  });
+
   it("honors an explicit PI_EXECUTABLE path", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-discovery-"));
     temporaryDirectories.push(directory);
@@ -45,11 +60,11 @@ describe("runtime discovery", () => {
   it("does not accept a non-executable file", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-discovery-"));
     temporaryDirectories.push(directory);
-    fs.writeFileSync(path.join(directory, "pi"), "not executable", {
+    fs.writeFileSync(path.join(directory, "custom-pi"), "not executable", {
       mode: 0o644,
     });
     expect(
-      findExecutable("pi", directory, { HOME: directory }),
+      findExecutable("custom-pi", directory, { HOME: directory }),
     ).toBeUndefined();
   });
 });

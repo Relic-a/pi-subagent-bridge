@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.2.3. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.2.4. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -54,6 +54,8 @@ If npm cannot run install scripts, finish setup explicitly with `pi-subagent-bri
 
 Confirm that `pi` is on your `PATH`, then start a new Codex thread so the bundled skill and MCP tools are loaded. Ask Codex to run `pi_doctor` to verify the installation.
 
+The installer reports the Pi executable it selected. If Pi is missing, install it with `npm install --global @earendil-works/pi-coding-agent` or set `PI_EXECUTABLE`, then rerun `pi-subagent-bridge install`.
+
 To update, install the latest npm release:
 
 ```bash
@@ -97,7 +99,7 @@ node scripts/sync-plugin.mjs --check
 
 Environment variables:
 
-- `PI_EXECUTABLE`: optional Pi executable override. By default the bridge detects `pi` on `PATH` and in common user-local install locations, then uses its absolute path.
+- `PI_EXECUTABLE`: optional Pi executable override. By default the bridge detects `pi` on `PATH` and in common user-local install locations, then uses its absolute path. When Pi is found outside the inherited `PATH`, its bin directory is placed first for Pi so `#!/usr/bin/env node` launchers use the matching Node runtime.
 - `PI_RPC_ARGS`: override Pi RPC args. Default: `--mode rpc`.
 - `PI_RPC_SESSION_ID_FLAG`: flag used when `pi_start.session_id` is provided. Default: `--session-id`.
 - `PI_RPC_NO_SESSION_FLAG`: optional flag to append for starts without `session_id`. Leave unset for persistent Pi sessions; set to `--no-session` to force ephemeral sessions.

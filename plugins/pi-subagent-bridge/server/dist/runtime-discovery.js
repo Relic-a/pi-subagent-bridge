@@ -4,25 +4,33 @@ import path from "node:path";
 export function discoverRuntime(env = process.env) {
     const nodeExecutable = fs.realpathSync(process.execPath);
     const requestedPi = env.PI_EXECUTABLE?.trim() || "pi";
-    const resolvedPi = findExecutable(requestedPi, env.PATH ?? "", env);
+    const pi = findExecutableLocation(requestedPi, env.PATH ?? "", env);
     return {
         nodeExecutable,
-        piExecutable: resolvedPi ?? requestedPi,
-        piFound: resolvedPi !== undefined,
-        // Pi's launcher can select its own Node runtime with `#!/usr/bin/env
-        // node`. Keep the environment that located Pi intact; the Node process
-        // hosting this MCP server is not necessarily compatible with Pi.
-        env: { ...env },
+        piExecutable: pi?.executable ?? requestedPi,
+        piFound: pi !== undefined,
+        // Pi's launcher can use `#!/usr/bin/env node`. Put its selected bin
+        // directory first when discovery needed a fallback so that launcher keeps
+        // using the Node installation that supplied Pi.
+        env: pi ? withExecutableDirectory(env, pi.directory) : { ...env },
     };
 }
 export function findExecutable(command, searchPath = process.env.PATH ?? "", env = process.env) {
+    return findExecutableLocation(command, searchPath, env)?.executable;
+}
+function findExecutableLocation(command, searchPath, env) {
     const hasPath = command.includes(path.sep) || (path.sep === "\\" && command.includes("/"));
-    if (hasPath)
-        return executablePath(path.resolve(command), env);
+    if (hasPath) {
+        const candidate = path.resolve(command);
+        const executable = executablePath(candidate, env);
+        return executable
+            ? { executable, directory: path.dirname(candidate) }
+            : undefined;
+    }
     for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
         const found = executablePath(path.join(directory, command), env);
         if (found)
-            return found;
+            return { executable: found, directory };
     }
     // GUI-launched apps often receive a minimal PATH. These cover the usual
     // user-local and system install locations without invoking a login shell.
@@ -30,6 +38,9 @@ export function findExecutable(command, searchPath = process.env.PATH ?? "", env
     const fallbackDirectories = [
         path.join(home, ".local", "bin"),
         path.join(home, ".npm-global", "bin"),
+        path.dirname(process.execPath),
+        path.join(home, ".volta", "bin"),
+        path.join(home, ".local", "share", "pnpm"),
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",
@@ -37,9 +48,15 @@ export function findExecutable(command, searchPath = process.env.PATH ?? "", env
     for (const directory of fallbackDirectories) {
         const found = executablePath(path.join(directory, command), env);
         if (found)
-            return found;
+            return { executable: found, directory };
     }
     return undefined;
+}
+function withExecutableDirectory(env, directory) {
+    const entries = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
+    if (entries.includes(directory))
+        return { ...env };
+    return { ...env, PATH: [directory, ...entries].join(path.delimiter) };
 }
 function executablePath(candidate, env) {
     const extensions = process.platform === "win32"
