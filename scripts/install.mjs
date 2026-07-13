@@ -41,14 +41,21 @@ run("codex", ["plugin", "add", selector, "--json"]);
 console.log(`pi-subagent-bridge: installed ${selector}. Start a new Codex thread to load it.`);
 
 function configurePluginRuntime() {
-  const manifestPath = path.join(root, "plugins", "pi-subagent-bridge", ".mcp.json");
+  const pluginRoot = path.join(root, "plugins", "pi-subagent-bridge");
+  const manifestPath = path.join(pluginRoot, ".mcp.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const server = manifest.mcpServers?.["pi-subagent-bridge"];
   if (!server) {
     console.error("pi-subagent-bridge: plugin MCP configuration is missing.");
     process.exit(1);
   }
+
+  // Codex resolves relative command arguments from the active workspace, not
+  // from the installed plugin. Resolve both executables while this package is
+  // installed so the copied plugin configuration remains self-contained.
   server.command = fs.realpathSync(process.execPath);
+  server.args = [fs.realpathSync(path.join(pluginRoot, "server", "dist", "index.js"))];
+  delete server.cwd;
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 

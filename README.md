@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.2.1. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.2.2. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 

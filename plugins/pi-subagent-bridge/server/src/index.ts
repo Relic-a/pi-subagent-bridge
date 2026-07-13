@@ -67,7 +67,7 @@ const manager = new RunManager({
 });
 
 const server = new Server(
-  { name: "pi-subagent-bridge", version: "0.2.1" },
+  { name: "pi-subagent-bridge", version: "0.2.2" },
   { capabilities: { tools: {} } },
 );
 server.onerror = (error) => {

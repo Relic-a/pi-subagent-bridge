@@ -60,7 +60,7 @@ const manager = new RunManager({
             .catch(() => undefined);
     },
 });
-const server = new Server({ name: "pi-subagent-bridge", version: "0.2.1" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "pi-subagent-bridge", version: "0.2.2" }, { capabilities: { tools: {} } });
 server.onerror = (error) => {
     console.error(JSON.stringify({
         level: "error",
