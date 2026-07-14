@@ -57,6 +57,19 @@ async function waitForFileContent(
   throw new Error(`Timed out waiting for ${expected} in ${filePath}`);
 }
 
+async function waitForRunState(
+  runId: string,
+  expected: "running" | "completed",
+  timeoutMs = 1000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (manager.getRun(runId).state === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for run ${runId} to become ${expected}`);
+}
+
 function makeManager(
   extraEnv?: NodeJS.ProcessEnv,
   overrides?: Partial<ConstructorParameters<typeof RunManager>[0]>,
@@ -99,6 +112,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_PID_FILE;
     delete process.env.FAKE_PI_EXIT_ON_PROMPT;
     delete process.env.FAKE_PI_DELAY_MS;
+    delete process.env.FAKE_PI_END_BEFORE_STEER_RESPONSE;
   });
 
   it("returns from start before fake agent completes and wait resolves on agent_end", async () => {
@@ -227,6 +241,7 @@ describe("RunManager", () => {
       task: "finish later",
       working_directory: tmp,
     });
+    await waitForRunState(run_id, "running");
     const response = await manager.steer(
       run_id,
       "Run focused tests before finishing.",
@@ -248,6 +263,29 @@ describe("RunManager", () => {
       expect.arrayContaining(["steer_sent", "steer_acknowledged"]),
     );
     await manager.stop(run_id);
+  });
+
+  it("does not acknowledge a steer after the run becomes terminal", async () => {
+    process.env.FAKE_PI_END_BEFORE_STEER_RESPONSE = "1";
+    const { run_id } = await manager.start({
+      task: "never finish without steering",
+      working_directory: tmp,
+    });
+    await waitForRunState(run_id, "running");
+
+    await expect(manager.steer(run_id, "finish now")).rejects.toThrow(
+      "RUN_NOT_ACTIVE_AFTER_STEER",
+    );
+    await expect(manager.wait(run_id)).resolves.toHaveProperty(
+      "state",
+      "completed",
+    );
+    expect(manager.getRunEvents(run_id).map((event) => event.kind)).toEqual(
+      expect.arrayContaining(["steer_sent", "steer_failed", "terminal"]),
+    );
+    expect(
+      manager.getRunEvents(run_id).map((event) => event.kind),
+    ).not.toContain("steer_acknowledged");
   });
 
   it("rejects steering a completed run", async () => {

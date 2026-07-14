@@ -188,17 +188,33 @@ def handle(message):
                 }
             )
             _session_emitted = True
-        emit(
-            {
-                "type": "response",
-                "command": "prompt",
-                "id": message.get("id"),
-                "success": True,
-                "data": {}
-                if os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") == "1"
-                else {"session_id": session_id},
-            }
-        )
+        response = {
+            "type": "response",
+            "command": "prompt",
+            "id": message.get("id"),
+            "success": True,
+            "data": {}
+            if os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") == "1"
+            else {"session_id": session_id},
+        }
+        if (
+            message.get("streamingBehavior") == "steer"
+            and os.environ.get("FAKE_PI_END_BEFORE_STEER_RESPONSE") == "1"
+        ):
+            emit(
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "ended before steer response"}
+                            ],
+                        }
+                    ],
+                }
+            )
+        emit(response)
         if "crash" in text:
             threading.Timer(0.02, lambda: os._exit(7)).start()
             return

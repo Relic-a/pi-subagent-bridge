@@ -269,10 +269,7 @@ export class RunManager {
     }
     async steer(runId, message) {
         const active = this.active.get(runId);
-        if (!active ||
-            active.settled ||
-            TERMINAL_STATES.has(active.state) ||
-            active.state === "stopping")
+        if (!active || active.settled || active.state !== "running")
             throw new Error("RUN_NOT_ACTIVE");
         const text = message.trim();
         if (!text)
@@ -290,6 +287,10 @@ export class RunManager {
                 message: `Coordinator steering (follow this in addition to the original task):\n${text}`,
                 streamingBehavior: "steer",
             });
+            const current = this.active.get(runId);
+            if (current !== active || active.settled || active.state !== "running") {
+                throw new Error("RUN_NOT_ACTIVE_AFTER_STEER");
+            }
             const acknowledged = this.options.store.addRunEvent({
                 timestamp: new Date().toISOString(),
                 run_id: runId,

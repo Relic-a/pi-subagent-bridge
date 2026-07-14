@@ -284,7 +284,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         {
             name: "pi_steer",
-            description: "Inject a bounded follow-up instruction into an active Pi RPC session without stopping or restarting it. Use pi_get_run_status first; delivery acknowledgement is separate from completion.",
+            description: "Inject a bounded follow-up instruction into a running Pi RPC session without stopping or restarting it. Use pi_get_run_status first. Acknowledgement confirms RPC acceptance, not that the agent acted on the instruction.",
             inputSchema: {
                 type: "object",
                 required: ["run_id", "message"],

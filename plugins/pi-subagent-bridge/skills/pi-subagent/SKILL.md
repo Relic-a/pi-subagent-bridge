@@ -32,6 +32,8 @@ work, compare Pi models, or inspect Pi subagent activity.
 - Use `pi_list_models` only when model selection is necessary. Prefer a focused `query` such as `"gpt 5.5 reasoning"` instead of listing every model.
 - Prefer `pi_run` for normal delegation. It starts once, waits internally, and returns the final answer plus structured workspace metadata.
 - Use `pi_start` only for advanced background control or when cancellation/status inspection is explicitly needed.
+- Before calling `pi_steer`, call `pi_get_run_status` and confirm the run is `running`. A steer acknowledgement confirms that Pi accepted the RPC request; inspect later status/events or the final result to verify that the agent acted on it.
+- Use `pi_get_run_events` only when the bounded status snapshot does not show enough context to decide whether or how to steer.
 - Use `pi_wait`, `pi_read_result`, or `pi_get_run` to retrieve the run's `session_id`. Pass that `session_id` to a subsequent `pi_start` to continue the conversation.
 - For an advanced `pi_start` run, call `pi_wait` with `timeout_ms: 100000` to receive a progress heartbeat before the MCP transport timeout. Continue only when a heartbeat is returned.
 - A heartbeat response includes `{"state": "running", "progress": {"elapsed_ms": ..., "tool_calls_count": ...}}`. Do not treat this as a terminal result.

@@ -1,6 +1,6 @@
 {
   "name": "pi-subagent-bridge",
-  "version": "0.2.5",
+  "version": "0.2.5+codex.20260714182305",
   "description": "Manage isolated Pi coding-agent subprocesses from Codex through a local MCP server.",
   "author": {
     "name": "Relic-a",
@@ -9,7 +9,12 @@
   "homepage": "https://github.com/Relic-a/pi-subagent-bridge#readme",
   "repository": "https://github.com/Relic-a/pi-subagent-bridge",
   "license": "MIT",
-  "keywords": ["codex", "mcp", "pi", "subagent"],
+  "keywords": [
+    "codex",
+    "mcp",
+    "pi",
+    "subagent"
+  ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {

@@ -326,12 +326,7 @@ export class RunManager {
     steer_event: number;
   }> {
     const active = this.active.get(runId);
-    if (
-      !active ||
-      active.settled ||
-      TERMINAL_STATES.has(active.state) ||
-      active.state === "stopping"
-    )
+    if (!active || active.settled || active.state !== "running")
       throw new Error("RUN_NOT_ACTIVE");
     const text = message.trim();
     if (!text) throw new Error("STEER_MESSAGE_EMPTY");
@@ -350,6 +345,10 @@ export class RunManager {
           streamingBehavior: "steer",
         },
       );
+      const current = this.active.get(runId);
+      if (current !== active || active.settled || active.state !== "running") {
+        throw new Error("RUN_NOT_ACTIVE_AFTER_STEER");
+      }
       const acknowledged = this.options.store.addRunEvent({
         timestamp: new Date().toISOString(),
         run_id: runId,

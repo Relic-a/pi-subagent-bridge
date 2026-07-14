@@ -11,6 +11,9 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 - `pi_doctor`: checks the Pi executable, bridge state, allowed roots, and git availability.
 - `pi_start`: starts one `pi --mode rpc` subprocess per run and returns a stable `run_id` immediately. Pass `session_id` to continue a previous Pi session. By default, git-backed workspaces run in an isolated `git worktree`.
 - `pi_wait`: waits for a run to reach `completed`, `failed`, `stopped`, or `timed_out`, plus any Pi `session_id` and compact workspace change references. When `timeout_ms` is provided, it may instead return a non-terminal heartbeat with `progress.elapsed_ms` and `progress.tool_calls_count`; call `pi_wait` again with the same `run_id` to continue waiting.
+- `pi_get_run_status`: returns a bounded activity snapshot for deciding whether and how to steer a run.
+- `pi_get_run_events`: returns a sanitized cursor-based event feed when the status snapshot is insufficient.
+- `pi_steer`: injects a follow-up instruction into a `running` Pi session. Its acknowledgement confirms RPC acceptance; inspect subsequent status/events or the final result to verify that the agent acted on it.
 - `pi_stop`: sends Pi's RPC abort command, waits for the grace period, then terminates the child process group if needed.
 - `pi_recent_tool_calls`: returns timestamped, ordered, sanitized `tool_execution_start` audit entries only.
 - `pi_get_run`: diagnostic state for recovery and debugging, including any Pi `session_id`.
@@ -105,6 +108,7 @@ Environment variables:
 - `PI_RPC_NO_SESSION_FLAG`: optional flag to append for starts without `session_id`. Leave unset for persistent Pi sessions; set to `--no-session` to force ephemeral sessions.
 - `PI_RPC_MODEL_LIST_METHOD`: default `get_available_models`.
 - `PI_RPC_START_METHOD`: default `prompt`.
+- `PI_RPC_STEER_METHOD`: RPC method used for steering. Defaults to `PI_RPC_START_METHOD`.
 - `PI_RPC_ABORT_METHOD`: default `abort`.
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: the current user's home directory.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
