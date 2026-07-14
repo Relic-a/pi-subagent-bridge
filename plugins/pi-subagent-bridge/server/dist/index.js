@@ -26,6 +26,15 @@ const RecentSchema = z.object({
     run_id: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(500).optional(),
 });
+const EventsSchema = z.object({
+    run_id: z.string().uuid(),
+    after: z.number().int().min(0).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+});
+const SteerSchema = z.object({
+    run_id: z.string().uuid(),
+    message: z.string().min(1).max(4000),
+});
 const ModelsSchema = z.object({ query: z.string().optional() });
 const dataDir = prepareDataDir();
 const runtime = discoverRuntime();
@@ -48,6 +57,7 @@ const manager = new RunManager({
     stopGraceMs: envInt("PI_BRIDGE_STOP_GRACE_MS", 5000),
     startMethod: process.env.PI_RPC_START_METHOD ?? "prompt",
     abortMethod: process.env.PI_RPC_ABORT_METHOD ?? "abort",
+    steerMethod: process.env.PI_RPC_STEER_METHOD ?? "prompt",
     worktreeRootName: process.env.PI_BRIDGE_WORKTREE_ROOT_NAME,
     sessionIdFlag: process.env.PI_RPC_SESSION_ID_FLAG ?? "--session-id",
     noSessionFlag: process.env.PI_RPC_NO_SESSION_FLAG,
@@ -247,6 +257,46 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             },
         },
         {
+            name: "pi_get_run_status",
+            description: "Return a bounded coordinator-ready snapshot of a run: state, recent activity, changed-file counts, and an event cursor. Use this before steering; it never exposes SQL.",
+            inputSchema: {
+                type: "object",
+                required: ["run_id"],
+                properties: { run_id: { type: "string", format: "uuid" } },
+                additionalProperties: false,
+            },
+            annotations: standardAnnotations("Get Pi run status", true),
+        },
+        {
+            name: "pi_get_run_events",
+            description: "Read a bounded, sanitized, cursor-based run event feed for a specific run. Use after pi_get_run_status only when its snapshot is insufficient.",
+            inputSchema: {
+                type: "object",
+                required: ["run_id"],
+                properties: {
+                    run_id: { type: "string", format: "uuid" },
+                    after: { type: "number", minimum: 0 },
+                    limit: { type: "number", minimum: 1, maximum: 500 },
+                },
+                additionalProperties: false,
+            },
+            annotations: standardAnnotations("Inspect Pi run events", true),
+        },
+        {
+            name: "pi_steer",
+            description: "Inject a bounded follow-up instruction into an active Pi RPC session without stopping or restarting it. Use pi_get_run_status first; delivery acknowledgement is separate from completion.",
+            inputSchema: {
+                type: "object",
+                required: ["run_id", "message"],
+                properties: {
+                    run_id: { type: "string", format: "uuid" },
+                    message: { type: "string", maxLength: 4000 },
+                },
+                additionalProperties: false,
+            },
+            annotations: standardAnnotations("Steer active Pi run", false),
+        },
+        {
             name: "pi_stop",
             description: "Abort a Pi run, then terminate its process group after the configured grace period if needed.",
             inputSchema: {
@@ -331,6 +381,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 })
                     .parse(args ?? {});
                 return jsonResult(await manager.wait(waitArgs.run_id, waitArgs.timeout_ms));
+            }
+            case "pi_get_run_status":
+                return jsonResult(manager.getRunSnapshot(RunIdSchema.parse(args ?? {}).run_id));
+            case "pi_get_run_events": {
+                const parsed = EventsSchema.parse(args ?? {});
+                return jsonResult(manager.getRunEvents(parsed.run_id, parsed.after, parsed.limit));
+            }
+            case "pi_steer": {
+                const parsed = SteerSchema.parse(args ?? {});
+                return jsonResult(await manager.steer(parsed.run_id, parsed.message));
             }
             case "pi_stop":
                 return jsonResult(await manager.stop(RunIdSchema.parse(args ?? {}).run_id));

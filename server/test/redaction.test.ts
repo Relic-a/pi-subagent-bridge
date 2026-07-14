@@ -21,5 +21,8 @@ describe("secret redaction", () => {
     );
     const syntheticKey = ["sk", "1234567890abcdefghijklmnop"].join("-");
     expect(redactSecrets(syntheticKey)).toBe("[REDACTED]");
+    expect(
+      redactSecrets("deploy --token synthetic-test-value --safe visible"),
+    ).toBe("deploy --token [REDACTED] --safe visible");
   });
 });

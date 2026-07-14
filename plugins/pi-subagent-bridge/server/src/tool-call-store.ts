@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import type { RunRecord, RunState, ToolCallAudit } from "./types.js";
+import type {
+  RunEvent,
+  RunEventKind,
+  RunRecord,
+  RunState,
+  ToolCallAudit,
+} from "./types.js";
 
 export class ToolCallStore {
   private db: Database.Database;
@@ -43,9 +49,19 @@ export class ToolCallStore {
         arguments_json TEXT,
         FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS run_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+      );
       CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id_sequence
         ON tool_calls(run_id, sequence DESC);
+      CREATE INDEX IF NOT EXISTS idx_run_events_run_id_sequence
+        ON run_events(run_id, sequence DESC);
     `);
     this.ensureColumn("runs", "session_id", "TEXT");
     this.ensureColumn("runs", "workspace_json", "TEXT");
@@ -155,6 +171,60 @@ export class ToolCallStore {
     }));
   }
 
+  addRunEvent(entry: Omit<RunEvent, "sequence">): RunEvent {
+    const result = this.db
+      .prepare(
+        `INSERT INTO run_events (timestamp, run_id, kind, payload_json)
+         VALUES (@timestamp, @run_id, @kind, @payload_json)`,
+      )
+      .run({ ...entry, payload_json: JSON.stringify(entry.payload) });
+    return { ...entry, sequence: Number(result.lastInsertRowid) };
+  }
+
+  getRunEvents(runId: string, after = 0, limit = 50): RunEvent[] {
+    const boundedLimit = Math.max(1, Math.min(limit, 500));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM run_events
+         WHERE run_id = ? AND sequence > ?
+         ORDER BY sequence ASC LIMIT ?`,
+      )
+      .all(runId, after, boundedLimit) as DbRunEvent[];
+    return rows.map((row) => ({
+      sequence: row.sequence,
+      timestamp: row.timestamp,
+      run_id: row.run_id,
+      kind: row.kind as RunEventKind,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    }));
+  }
+
+  latestRunEvents(runId: string, limit = 8): RunEvent[] {
+    const boundedLimit = Math.max(1, Math.min(limit, 50));
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM run_events WHERE run_id = ?
+         ORDER BY sequence DESC LIMIT ?`,
+      )
+      .all(runId, boundedLimit) as DbRunEvent[];
+    return rows.reverse().map((row) => ({
+      sequence: row.sequence,
+      timestamp: row.timestamp,
+      run_id: row.run_id,
+      kind: row.kind as RunEventKind,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    }));
+  }
+
+  latestRunEventSequence(runId: string): number {
+    const row = this.db
+      .prepare(
+        "SELECT MAX(sequence) AS sequence FROM run_events WHERE run_id = ?",
+      )
+      .get(runId) as { sequence: number | null };
+    return row.sequence ?? 0;
+  }
+
   countToolCalls(runId: string): number {
     const row = this.db
       .prepare("SELECT COUNT(*) AS count FROM tool_calls WHERE run_id = ?")
@@ -261,6 +331,14 @@ interface DbToolCall {
   pi_tool_call_id: string;
   tool_name: string;
   arguments_json: string | null;
+}
+
+interface DbRunEvent {
+  sequence: number;
+  timestamp: string;
+  run_id: string;
+  kind: string;
+  payload_json: string;
 }
 
 function normalizeRecord(

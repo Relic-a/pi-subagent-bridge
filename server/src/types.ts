@@ -81,6 +81,43 @@ export interface ToolCallAudit {
   arguments?: unknown;
 }
 
+export type RunEventKind =
+  | "run_state"
+  | "tool_started"
+  | "workspace_changed"
+  | "steer_sent"
+  | "steer_acknowledged"
+  | "steer_failed"
+  | "terminal";
+
+export interface RunEvent {
+  sequence: number;
+  timestamp: string;
+  run_id: string;
+  kind: RunEventKind;
+  payload: Record<string, unknown>;
+}
+
+export interface ChangedFileSummary {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+export interface RunSnapshot {
+  run_id: string;
+  state: RunState;
+  phase: RunProgressEvent["phase"];
+  elapsed_ms: number;
+  last_activity_at: string;
+  latest_activity?: string;
+  tool_calls_count: number;
+  changed_files: ChangedFileSummary[];
+  total_changed_files: number;
+  recent_progress: string[];
+  event_cursor: number;
+}
+
 export interface RunDiagnostics {
   run_id: string;
   state: RunState;

@@ -22,6 +22,7 @@ export function redactSecrets(value) {
 }
 function redactString(input) {
     let output = input.replace(SECRET_VALUE_PATTERN, "[REDACTED]");
+    output = output.replace(/(--?(?:authorization|api[_-]?key|token|secret|password|passwd|private[_-]?key|access[_-]?key|credential)(?:=|\s+))("[^"]+"|'[^']+'|\S+)/gi, "$1[REDACTED]");
     output = output.replace(/\b([A-Z0-9_]*(?:authorization|api[_-]?key|token|secret|password|passwd|private[_-]?key|access[_-]?key|credential)[A-Z0-9_]*)\s*[:=]\s*("[^"]+"|'[^']+'|\S+)/gi, "$1=[REDACTED]");
     return output.length > 2000
         ? `${output.slice(0, 2000)}...[TRUNCATED]`

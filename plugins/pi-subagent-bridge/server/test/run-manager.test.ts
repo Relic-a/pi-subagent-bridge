@@ -30,6 +30,33 @@ async function waitForReadableResult(runId: string, timeoutMs = 1000) {
   throw lastError;
 }
 
+async function waitForFile(filePath: string, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+async function waitForFileContent(
+  filePath: string,
+  expected: string,
+  timeoutMs = 1000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (
+      fs.existsSync(filePath) &&
+      fs.readFileSync(filePath, "utf8").includes(expected)
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${expected} in ${filePath}`);
+}
+
 function makeManager(
   extraEnv?: NodeJS.ProcessEnv,
   overrides?: Partial<ConstructorParameters<typeof RunManager>[0]>,
@@ -70,6 +97,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_IGNORE_SIGTERM;
     delete process.env.FAKE_PI_PID_FILE;
     delete process.env.FAKE_PI_EXIT_ON_PROMPT;
+    delete process.env.FAKE_PI_DELAY_MS;
   });
 
   it("returns from start before fake agent completes and wait resolves on agent_end", async () => {
@@ -143,19 +171,22 @@ describe("RunManager", () => {
     process.env.FAKE_PI_IGNORE_ABORT = "1";
     const abortFile = path.join(tmp, "abort.log");
     const signalFile = path.join(tmp, "signals.log");
+    const pidFile = path.join(tmp, "pi.pid");
     process.env.FAKE_PI_ABORT_FILE = abortFile;
     process.env.FAKE_PI_SIGNAL_FILE = signalFile;
+    process.env.FAKE_PI_PID_FILE = pidFile;
     const { run_id } = await manager.start({
       task: "never ignore abort",
       working_directory: tmp,
     });
+    await waitForFile(pidFile);
     const startedAt = Date.now();
     await manager.stop(run_id);
     const result = await manager.wait(run_id);
     expect(result.state).toBe("stopped");
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
-    expect(fs.readFileSync(abortFile, "utf8")).toContain("abort");
-    expect(fs.readFileSync(signalFile, "utf8")).toContain("SIGTERM");
+    await waitForFileContent(abortFile, "abort");
+    await waitForFileContent(signalFile, "SIGTERM");
   });
 
   it("server shutdown resolves active children as stopped", async () => {
@@ -166,6 +197,56 @@ describe("RunManager", () => {
     const wait = manager.wait(run_id);
     await manager.shutdown();
     await expect(wait).resolves.toHaveProperty("state", "stopped");
+  });
+
+  it("records bounded run events and exposes a coordinator snapshot", async () => {
+    const { run_id } = await manager.start({
+      task: "audit",
+      working_directory: tmp,
+    });
+    await manager.wait(run_id);
+    const events = manager.getRunEvents(run_id);
+    expect(events.map((event) => event.kind)).toEqual(
+      expect.arrayContaining(["run_state", "tool_started", "terminal"]),
+    );
+    expect(JSON.stringify(events)).not.toContain("SECRET OUTPUT");
+    const snapshot = manager.getRunSnapshot(run_id);
+    expect(snapshot).toMatchObject({ run_id, state: "completed" });
+    expect(snapshot.tool_calls_count).toBe(1);
+    expect(snapshot.event_cursor).toBeGreaterThan(0);
+  });
+
+  it("steers an active run through its live RPC client and records acknowledgement", async () => {
+    process.env.FAKE_PI_DELAY_MS = "500";
+    const promptFile = path.join(tmp, "prompt.txt");
+    process.env.FAKE_PI_PROMPT_FILE = promptFile;
+    const { run_id } = await manager.start({
+      task: "finish later",
+      working_directory: tmp,
+    });
+    const response = await manager.steer(
+      run_id,
+      "Run focused tests before finishing.",
+    );
+    expect(response).toMatchObject({ run_id, delivery: "acknowledged" });
+    expect(fs.readFileSync(promptFile, "utf8")).toContain(
+      "Coordinator steering",
+    );
+    expect(manager.getRunEvents(run_id).map((event) => event.kind)).toEqual(
+      expect.arrayContaining(["steer_sent", "steer_acknowledged"]),
+    );
+    await manager.stop(run_id);
+  });
+
+  it("rejects steering a completed run", async () => {
+    const { run_id } = await manager.start({
+      task: "finish later",
+      working_directory: tmp,
+    });
+    await manager.wait(run_id);
+    await expect(manager.steer(run_id, "too late")).rejects.toThrow(
+      "RUN_NOT_ACTIVE",
+    );
   });
 
   it("tool starts are timestamped, ordered, sanitized, and results are not persisted", async () => {
@@ -234,7 +315,7 @@ describe("RunManager", () => {
     process.env.FAKE_PI_PID_FILE = pidFile;
     process.env.FAKE_PI_IGNORE_SIGTERM = "1";
     process.env.FAKE_PI_IGNORE_ABORT = "1";
-    makeManager(undefined, { maxRuntimeMs: 60, killGraceMs: 40 });
+    makeManager(undefined, { maxRuntimeMs: 500, killGraceMs: 40 });
     const { run_id } = await manager.start({
       task: "never survive timeout",
       working_directory: tmp,
@@ -254,8 +335,13 @@ describe("RunManager", () => {
       task: "session test",
       working_directory: tmp,
     });
-    // Wait for the prompt request to resolve so session_id is captured
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const deadline = Date.now() + 1000;
+    while (
+      !manager.getRun(started.run_id).session_id &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     const diag = manager.getRun(started.run_id);
     expect(diag.session_id).toBeDefined();
     expect(typeof diag.session_id).toBe("string");
@@ -335,6 +421,15 @@ describe("RunManager", () => {
       expect.arrayContaining(["tracked.txt", "new-file.txt"]),
     );
     expect(result.workspace?.untracked_files).toEqual(["new-file.txt"]);
+    const snapshot = manager.getRunSnapshot(started.run_id);
+    expect(snapshot.phase).toBe("terminal");
+    expect(snapshot.total_changed_files).toBe(2);
+    expect(snapshot.changed_files.map((file) => file.path)).not.toContain(
+      ".pi-bridge/status.txt",
+    );
+    expect(JSON.stringify(snapshot.recent_progress)).not.toContain(
+      "synthetic-test-value",
+    );
     expect(result.workspace?.patch_path).toBeDefined();
     expect(result.workspace?.diff_command).toContain("git -C");
     expect(result.workspace?.diff_command).not.toContain("pi edit");

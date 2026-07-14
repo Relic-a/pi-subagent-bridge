@@ -238,6 +238,82 @@ export class RunManager {
     recentToolCalls(limit, runId) {
         return this.options.store.recentToolCalls(limit, runId);
     }
+    getRunEvents(runId, after, limit) {
+        if (!this.options.store.getRun(runId))
+            throw new Error(`Unknown run_id: ${runId}`);
+        return this.options.store.getRunEvents(runId, after, limit);
+    }
+    getRunSnapshot(runId) {
+        const record = this.options.store.getRun(runId);
+        if (!record)
+            throw new Error(`Unknown run_id: ${runId}`);
+        const active = this.active.get(runId);
+        const events = this.options.store.latestRunEvents(runId, 8);
+        const changedFiles = this.workspaceSummary(record.workspace);
+        const latest = events.at(-1);
+        return {
+            run_id: runId,
+            state: record.state,
+            phase: phaseFromEvents(events, record.state),
+            elapsed_ms: active
+                ? Date.now() - active.startedAtMs
+                : Date.parse(record.updated_at) - Date.parse(record.created_at),
+            last_activity_at: latest?.timestamp ?? record.updated_at,
+            latest_activity: latest ? eventSummary(latest) : undefined,
+            tool_calls_count: this.options.store.countToolCalls(runId),
+            changed_files: changedFiles.slice(0, 12),
+            total_changed_files: changedFiles.length,
+            recent_progress: events.slice(-6).map(eventSummary),
+            event_cursor: this.options.store.latestRunEventSequence(runId),
+        };
+    }
+    async steer(runId, message) {
+        const active = this.active.get(runId);
+        if (!active ||
+            active.settled ||
+            TERMINAL_STATES.has(active.state) ||
+            active.state === "stopping")
+            throw new Error("RUN_NOT_ACTIVE");
+        const text = message.trim();
+        if (!text)
+            throw new Error("STEER_MESSAGE_EMPTY");
+        if (text.length > 4000)
+            throw new Error("STEER_MESSAGE_TOO_LONG");
+        const sent = this.options.store.addRunEvent({
+            timestamp: new Date().toISOString(),
+            run_id: runId,
+            kind: "steer_sent",
+            payload: { summary: String(redactSecrets(text)).slice(0, 500) },
+        });
+        try {
+            await active.client.request(this.options.steerMethod ?? this.options.startMethod, {
+                message: `Coordinator steering (follow this in addition to the original task):\n${text}`,
+            });
+            const acknowledged = this.options.store.addRunEvent({
+                timestamp: new Date().toISOString(),
+                run_id: runId,
+                kind: "steer_acknowledged",
+                payload: { sent_sequence: sent.sequence },
+            });
+            return {
+                run_id: runId,
+                delivery: "acknowledged",
+                steer_event: acknowledged.sequence,
+            };
+        }
+        catch (error) {
+            this.options.store.addRunEvent({
+                timestamp: new Date().toISOString(),
+                run_id: runId,
+                kind: "steer_failed",
+                payload: {
+                    sent_sequence: sent.sequence,
+                    error: String(redactSecrets(error instanceof Error ? error.message : String(error))).slice(0, 500),
+                },
+            });
+            throw error;
+        }
+    }
     applyChanges(runId, dryRun = false) {
         const result = this.readResult(runId);
         const workspace = result.workspace;
@@ -325,7 +401,32 @@ export class RunManager {
                     ? undefined
                     : redactSecrets(params.arguments ?? params.args),
             });
+            this.options.store.addRunEvent({
+                timestamp: new Date().toISOString(),
+                run_id: runId,
+                kind: "tool_started",
+                payload: {
+                    tool: String(params.tool_name ?? params.toolName ?? params.name ?? "unknown"),
+                    summary: summarizeToolStart(params),
+                },
+            });
             this.emitProgress(runId, "tool", String(params.tool_name ?? params.toolName ?? params.name ?? "unknown"));
+        }
+        if (name === "tool_execution_end") {
+            const record = this.options.store.getRun(runId);
+            const files = this.workspaceSummary(record?.workspace);
+            if (files.length > 0) {
+                this.options.store.addRunEvent({
+                    timestamp: new Date().toISOString(),
+                    run_id: runId,
+                    kind: "workspace_changed",
+                    payload: {
+                        summary: `${files.length} file(s) changed`,
+                        files: files.slice(0, 12),
+                        total_files: files.length,
+                    },
+                });
+            }
         }
         if (name === "session_created" || name === "session_started") {
             const sid = extractSessionId(params);
@@ -406,6 +507,17 @@ export class RunManager {
         if (active)
             active.state = next;
         this.options.store.updateRun(runId, next, fields);
+        this.options.store.addRunEvent({
+            timestamp: new Date().toISOString(),
+            run_id: runId,
+            kind: TERMINAL_STATES.has(next) ? "terminal" : "run_state",
+            payload: {
+                state: next,
+                error: fields?.error
+                    ? String(redactSecrets(fields.error)).slice(0, 500)
+                    : undefined,
+            },
+        });
         process.stderr.write(JSON.stringify({
             level: "info",
             event: "run_state",
@@ -648,6 +760,17 @@ ${task}`;
                 fs.writeFileSync(workspace.metadata_path, JSON.stringify(finalized, null, 2), "utf8");
             }
             this.options.store.updateRunWorkspace(runId, finalized);
+            const files = this.workspaceSummary(finalized);
+            this.options.store.addRunEvent({
+                timestamp: new Date().toISOString(),
+                run_id: runId,
+                kind: "workspace_changed",
+                payload: {
+                    summary: `${finalized.changed_files?.length ?? 0} file(s) changed`,
+                    files: files.slice(0, 12),
+                    total_files: files.length,
+                },
+            });
             return finalized;
         }
         catch (error) {
@@ -671,6 +794,32 @@ ${task}`;
         }
         catch {
             return undefined;
+        }
+    }
+    workspaceSummary(workspace) {
+        if (!workspace?.base_commit)
+            return [];
+        try {
+            return this.git(workspace.agent_working_directory, [
+                "diff",
+                "--numstat",
+                workspace.base_commit,
+                "--",
+            ])
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => {
+                const [added, removed, ...rest] = line.split("\t");
+                return {
+                    path: rest.join("\t"),
+                    added: Number(added) || 0,
+                    removed: Number(removed) || 0,
+                };
+            })
+                .filter((file) => file.path !== ".pi-bridge" && !file.path.startsWith(".pi-bridge/"));
+        }
+        catch {
+            return [];
         }
     }
     git(cwd, args) {
@@ -941,6 +1090,46 @@ function sessionFiles(dir) {
 function sessionIdFromPath(filePath) {
     const match = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(path.basename(filePath));
     return match?.[1];
+}
+function summarizeToolStart(params) {
+    const tool = String(params.tool_name ?? params.toolName ?? params.name ?? "tool");
+    const args = redactSecrets(params.arguments ?? params.args);
+    if (isRecord(args)) {
+        const command = args.command ?? args.path ?? args.file_path ?? args.query;
+        if (typeof command === "string")
+            return `${tool}: ${command.slice(0, 240)}`;
+    }
+    return `Started ${tool}`;
+}
+function phaseFromEvents(events, state) {
+    if (TERMINAL_STATES.has(state))
+        return "terminal";
+    const last = events.at(-1);
+    if (!last)
+        return "starting";
+    if (last.kind === "terminal")
+        return "terminal";
+    if (last.kind === "tool_started")
+        return "tool";
+    if (last.kind === "run_state" && last.payload.state === "running")
+        return "running";
+    return "finishing";
+}
+function eventSummary(event) {
+    const payload = event.payload;
+    if (event.kind === "tool_started")
+        return String(payload.summary ?? "Started tool");
+    if (event.kind === "workspace_changed")
+        return String(payload.summary ?? "Workspace changed");
+    if (event.kind === "steer_sent")
+        return "Coordinator steering sent";
+    if (event.kind === "steer_acknowledged")
+        return "Coordinator steering acknowledged";
+    if (event.kind === "steer_failed")
+        return "Coordinator steering delivery failed";
+    if (event.kind === "terminal")
+        return `Run ${String(payload.state ?? "ended")}`;
+    return `Run state: ${String(payload.state ?? "updated")}`;
 }
 function parseUntrackedFiles(status) {
     return status
