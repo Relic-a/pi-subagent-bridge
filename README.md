@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.3.0. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.4.0. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -20,6 +20,23 @@ Codex plugin marketplace repo that exposes a bundled MCP stdio server for managi
 - `pi_read_result`: reads an already completed result after an interrupted wait connection, including any Pi `session_id`.
 - `pi_apply_changes`: conflict-checks and applies a completed isolated run's patch to the coordinator checkout. Pass `dry_run: true` to perform only the checks.
 - `pi_discard_workspace`: removes a completed run's isolated worktree and branch.
+
+## Execution Profiles
+
+`pi_run` and `pi_start` accept an optional `agent` profile. Profiles supply Pi's
+tools, workspace mode, and role instructions at the bridge layer, so task text
+should describe the desired outcome without restating the role:
+
+- `explore`: inspect and map relevant code, data flow, conventions, and risks.
+  It runs in the current workspace with `read`, `grep`, `find`, and `ls` only.
+- `review`: independently audit correctness, regressions, security, and missing
+  verification. It has the same read-only tools and reports findings by severity.
+- `implement`: make and verify scoped changes with read/write tools in an
+  isolated git worktree.
+
+The selected profile overrides a caller-supplied `workspace_mode`. Explore and
+Review are read-only at the Pi tool layer; they are not an operating-system
+sandbox for untrusted repositories or tool implementations.
 
 ## Session Continuation
 
@@ -154,7 +171,7 @@ node scripts/validate-plugin.mjs
 ## Security Notes
 
 - MCP protocol responses are written only to stdout. Operational logs are structured JSON lines on stderr.
-- Working directories are restricted to configured allowed roots and reject `..` traversal segments.
+- Working directories are restricted to configured allowed roots, reject `..` traversal segments, and are checked through canonical paths to prevent symlink escapes.
 - Tool-call audit storage records only `tool_execution_start` metadata. It never persists tool results, output chunks, or `tool_execution_end` result content.
 - Arguments are redacted for likely credentials, tokens, passwords, authorization headers, and common API-key patterns before persistence.
 - Completed model responses are persisted only as final answers for interrupted-wait recovery.

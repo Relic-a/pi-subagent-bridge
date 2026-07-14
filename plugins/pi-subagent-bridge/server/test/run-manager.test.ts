@@ -632,6 +632,109 @@ describe("RunManager", () => {
     expect(args).not.toContain("--no-session");
   });
 
+  it.each([
+    {
+      agent: "explore" as const,
+      role: "You are an exploration subagent.",
+    },
+    {
+      agent: "review" as const,
+      role: "You are an independent code-review subagent.",
+    },
+  ])(
+    "starts a $agent agent with read-only Pi tools",
+    async ({ agent, role }) => {
+      const argsFile = path.join(tmp, `${agent}-args.jsonl`);
+      const promptFile = path.join(tmp, `${agent}-prompt.txt`);
+      process.env.FAKE_PI_ARGS_FILE = argsFile;
+      process.env.FAKE_PI_PROMPT_FILE = promptFile;
+      fs.writeFileSync(path.join(tmp, "tracked.txt"), "base\n");
+      execGit(tmp, ["init"]);
+      execGit(tmp, ["add", "tracked.txt"]);
+      execGit(tmp, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "base",
+      ]);
+
+      const started = await manager.start({
+        agent,
+        task: "Map the persistence layer.",
+        working_directory: tmp,
+        workspace_mode: "worktree",
+      });
+      const result = await manager.wait(started.run_id);
+
+      const [args] = fs
+        .readFileSync(argsFile, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(started.workspace.mode).toBe("direct");
+      expect(args).toEqual(
+        expect.arrayContaining([
+          "--tools",
+          "read,grep,find,ls",
+          "--no-extensions",
+          "--no-skills",
+          "--no-prompt-templates",
+        ]),
+      );
+      expect(args).not.toContain("bash");
+      expect(fs.readFileSync(promptFile, "utf8")).toContain(role);
+      expect(result.agent).toBe(agent);
+    },
+  );
+
+  it("forces implement agents into writable isolated worktrees", async () => {
+    const argsFile = path.join(tmp, "implement-args.jsonl");
+    const promptFile = path.join(tmp, "implement-prompt.txt");
+    process.env.FAKE_PI_ARGS_FILE = argsFile;
+    process.env.FAKE_PI_PROMPT_FILE = promptFile;
+    fs.writeFileSync(path.join(tmp, "tracked.txt"), "base\n");
+    execGit(tmp, ["init"]);
+    execGit(tmp, ["add", "tracked.txt"]);
+    execGit(tmp, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "base",
+    ]);
+
+    const started = await manager.start({
+      agent: "implement",
+      task: "Make a scoped change.",
+      working_directory: tmp,
+      workspace_mode: "direct",
+    });
+    const result = await manager.wait(started.run_id);
+    const [args] = fs
+      .readFileSync(argsFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+
+    expect(started.workspace.mode).toBe("worktree");
+    expect(args).toEqual(
+      expect.arrayContaining(["--tools", "read,bash,edit,write,grep,find,ls"]),
+    );
+    expect(fs.readFileSync(promptFile, "utf8")).toContain(
+      "You are an implementation subagent.",
+    );
+    expect(result.agent).toBe("implement");
+    expect(manager.discardWorkspace(started.run_id)).toEqual({
+      run_id: started.run_id,
+      discarded: true,
+    });
+  });
+
   it("rejects invalid working directories and path traversal", async () => {
     await expect(
       manager.start({ task: "x", working_directory: `${tmp}/../elsewhere` }),
@@ -639,5 +742,36 @@ describe("RunManager", () => {
     await expect(
       manager.start({ task: "x", working_directory: "/does/not/exist" }),
     ).rejects.toThrow(/allowed root/);
+  });
+
+  it("rejects working directories that escape an allowed root through a symlink", async () => {
+    await manager.shutdown();
+    const allowed = path.join(tmp, "allowed");
+    const outside = path.join(tmp, "outside");
+    const escape = path.join(allowed, "escape");
+    fs.mkdirSync(allowed);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, escape, "dir");
+    makeManager(undefined, { allowedRoots: [allowed] });
+
+    await expect(
+      manager.start({ task: "x", working_directory: escape }),
+    ).rejects.toThrow(/allowed root/);
+  });
+
+  it("allows a symlinked working directory whose target remains in the allowed root", async () => {
+    const target = path.join(tmp, "target");
+    const link = path.join(tmp, "link");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link, "dir");
+
+    const started = await manager.start({
+      task: "inspect",
+      working_directory: link,
+    });
+    const result = await manager.wait(started.run_id);
+
+    expect(result.state).toBe("completed");
+    expect(manager.getRun(started.run_id).working_directory).toBe(link);
   });
 });

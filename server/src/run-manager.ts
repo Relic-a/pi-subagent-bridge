@@ -3,6 +3,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { PiRpcClient, type RpcEvent } from "./pi-rpc-client.js";
+import {
+  resolveAgentProfile,
+  type AgentModelDefaults,
+  type AgentProfile,
+  type AgentProfileName,
+} from "./agent-profiles.js";
 import { redactSecrets } from "./redaction.js";
 import { ToolCallStore } from "./tool-call-store.js";
 import type {
@@ -61,6 +67,7 @@ export interface RunManagerOptions {
   maxConcurrentRuns?: number;
   killGraceMs?: number;
   redactFinalAnswers?: boolean;
+  agentProfileModels?: Partial<Record<AgentProfileName, AgentModelDefaults>>;
 }
 
 export class RunManager {
@@ -79,8 +86,24 @@ export class RunManager {
       );
     }
     const cwd = this.validateWorkingDirectory(input.working_directory);
+    const profile = resolveAgentProfile(
+      input.agent,
+      this.options.agentProfileModels,
+    );
+    const effectiveInput: StartRunInput = {
+      ...input,
+      provider: input.provider ?? profile?.model_defaults?.provider,
+      model_id: input.model_id ?? profile?.model_defaults?.model_id,
+      thinking_level:
+        input.thinking_level ?? profile?.model_defaults?.thinking_level,
+      workspace_mode: profile?.workspace_mode ?? input.workspace_mode,
+    };
     const runId = crypto.randomUUID();
-    const workspace = this.prepareWorkspace(cwd, runId, input.workspace_mode);
+    const workspace = this.prepareWorkspace(
+      cwd,
+      runId,
+      effectiveInput.workspace_mode,
+    );
     const agentCwd = workspace.agent_working_directory;
     const now = new Date().toISOString();
     let resolveOnce!: (result: RunResult) => void;
@@ -99,7 +122,7 @@ export class RunManager {
       : snapshotSessionFiles(this.sessionDirsFor(agentCwd));
     const client = new PiRpcClient({
       executable: this.options.piExecutable,
-      args: this.argsFor(input),
+      args: this.argsFor(effectiveInput, profile),
       cwd: agentCwd,
       env: this.options.piEnv,
       onEvent: (event) => this.handleEvent(runId, event),
@@ -124,6 +147,7 @@ export class RunManager {
       stopRequested: false,
       abortSent: false,
       client,
+      agent: profile?.name,
       sessionId,
       sessionSnapshot,
       settled: false,
@@ -139,9 +163,10 @@ export class RunManager {
           created_at: now,
           updated_at: now,
           working_directory: cwd,
-          provider: input.provider,
-          model_id: input.model_id,
-          thinking_level: input.thinking_level,
+          agent: profile?.name,
+          provider: effectiveInput.provider,
+          model_id: effectiveInput.model_id,
+          thinking_level: effectiveInput.thinking_level,
           session_id: sessionId,
           workspace,
         },
@@ -162,7 +187,7 @@ export class RunManager {
 
     client
       .request(this.options.startMethod, {
-        message: this.messageForAgent(input.task, workspace),
+        message: this.messageForAgent(input.task, workspace, profile),
       })
       .then((data) => {
         const active = this.active.get(runId);
@@ -196,6 +221,7 @@ export class RunManager {
       run_id: runId,
       state: record.state as RunResult["state"],
       final_answer: record.final_answer ?? "",
+      agent: record.agent,
       error: record.error,
       session_id: record.session_id,
       workspace: record.workspace,
@@ -258,6 +284,7 @@ export class RunManager {
       created_at: record.created_at,
       updated_at: record.updated_at,
       working_directory: record.working_directory,
+      agent: record.agent,
       provider: record.provider,
       model_id: record.model_id,
       thinking_level: record.thinking_level,
@@ -277,6 +304,7 @@ export class RunManager {
       run_id: runId,
       state: record.state as RunResult["state"],
       final_answer: record.final_answer ?? "",
+      agent: record.agent,
       error: record.error,
       session_id: record.session_id,
       workspace: record.workspace,
@@ -636,18 +664,24 @@ export class RunManager {
     if (parts.includes(".."))
       throw new Error("Path traversal is not allowed in working_directory.");
     const resolved = path.resolve(input);
-    const allowed = this.options.allowedRoots.map((root) => path.resolve(root));
-    if (
-      !allowed.some(
-        (root) =>
-          resolved === root || resolved.startsWith(`${root}${path.sep}`),
-      )
-    ) {
+    const configuredRoots = this.options.allowedRoots.map((root) =>
+      path.resolve(root),
+    );
+    if (!configuredRoots.some((root) => isPathWithin(resolved, root))) {
       throw new Error(
-        `working_directory must be under an allowed root: ${allowed.join(", ")}`,
+        `working_directory must be under an allowed root: ${configuredRoots.join(", ")}`,
       );
     }
-    const stat = fs.statSync(resolved);
+
+    const canonical = fs.realpathSync(resolved);
+    const canonicalRoots = configuredRoots.map((root) => fs.realpathSync(root));
+    if (!canonicalRoots.some((root) => isPathWithin(canonical, root))) {
+      throw new Error(
+        `working_directory must be under an allowed root: ${configuredRoots.join(", ")}`,
+      );
+    }
+
+    const stat = fs.statSync(canonical);
     if (!stat.isDirectory())
       throw new Error("working_directory must be an existing directory.");
     return resolved;
@@ -816,18 +850,26 @@ export class RunManager {
     }
   }
 
-  private messageForAgent(task: string, workspace: RunWorkspace): string {
+  private messageForAgent(
+    task: string,
+    workspace: RunWorkspace,
+    profile?: AgentProfile,
+  ): string {
     const instructions = [
       "You are a coding subagent working for a coordinator.",
+      ...(profile?.instructions ?? []),
       "",
       "Follow these instructions in order:",
       "1. Treat the user task below as the authoritative request.",
-      "2. Inspect the repository before changing files, and follow existing project patterns.",
-      "3. Keep changes scoped to the task. Preserve unrelated user or repository changes.",
-      "4. Make concrete file edits when the task asks for implementation; do not stop at advice unless the task is only a question or review.",
-      "5. Run the most relevant verification available for your changes when feasible. If verification cannot be run, say why.",
-      "6. In your final answer, summarize changed files and verification only. Do not paste full diffs or patches.",
+      "2. Inspect the repository before reaching a conclusion, and follow existing project patterns.",
+      "3. Keep all work scoped to the task. Preserve unrelated user or repository changes.",
     ];
+    if (!profile || profile.name === "implement") {
+      instructions.push(
+        "4. Make concrete file edits when the task asks for implementation; do not stop at advice unless the task is only a question or review.",
+        "5. Run the most relevant verification available for your changes when feasible. If verification cannot be run, say why.",
+      );
+    }
     if (workspace.mode === "worktree") {
       instructions.push(
         "",
@@ -976,8 +1018,12 @@ ${task}`;
     return run.client;
   }
 
-  private argsFor(input: StartRunInput): string[] | undefined {
+  private argsFor(
+    input: StartRunInput,
+    profile?: AgentProfile,
+  ): string[] | undefined {
     const args = [...(this.options.piArgs ?? [])];
+    if (profile) args.push(...profile.tool_args);
     if (input.session_id) {
       args.push(this.options.sessionIdFlag ?? "--session-id", input.session_id);
     } else if (this.options.noSessionFlag) {
@@ -1122,6 +1168,7 @@ ${task}`;
       run_id: runId,
       state,
       final_answer: finalAnswer,
+      agent: run.agent,
       error,
       session_id: sessionId,
       workspace,
@@ -1155,6 +1202,10 @@ ${task}`;
       } catch {}
     }
   }
+}
+
+function isPathWithin(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
 function extractFinalAnswer(messages: unknown): string | undefined {

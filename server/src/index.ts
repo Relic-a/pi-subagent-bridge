@@ -8,6 +8,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { AGENT_PROFILE_NAMES } from "./agent-profiles.js";
 import { listModels } from "./model-catalog.js";
 import { preparePiEnvironment } from "./pi-environment.js";
 import { RunManager } from "./run-manager.js";
@@ -17,6 +18,7 @@ import { ToolCallStore } from "./tool-call-store.js";
 const StartSchema = z.object({
   task: z.string().min(1),
   working_directory: z.string().min(1),
+  agent: z.enum(AGENT_PROFILE_NAMES).optional(),
   provider: z.string().optional(),
   model_id: z.string().optional(),
   thinking_level: z.string().optional(),
@@ -81,7 +83,7 @@ const manager = new RunManager({
 });
 
 const server = new Server(
-  { name: "pi-subagent-bridge", version: "0.3.0" },
+  { name: "pi-subagent-bridge", version: "0.4.0" },
   { capabilities: { tools: {} } },
 );
 server.onerror = (error) => {
@@ -106,6 +108,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           task: { type: "string" },
           working_directory: { type: "string" },
+          agent: agentProfileSchema(),
           provider: { type: "string" },
           model_id: { type: "string" },
           thinking_level: { type: "string" },
@@ -164,6 +167,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           task: { type: "string" },
           working_directory: { type: "string" },
+          agent: agentProfileSchema(),
           provider: { type: "string" },
           model_id: { type: "string" },
           thinking_level: { type: "string" },
@@ -192,6 +196,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           run_id: { type: "string", format: "uuid" },
+          agent: agentProfileSchema(),
           session_id: { type: "string" },
           workspace: { type: "object" },
         },
@@ -520,6 +525,7 @@ function runResultSchema() {
       run_id: { type: "string", format: "uuid" },
       state: { type: "string" },
       final_answer: { type: "string" },
+      agent: agentProfileSchema(),
       error: { type: "string" },
       session_id: { type: "string" },
       workspace: { type: "object" },
@@ -537,6 +543,7 @@ function runDiagnosticsSchema() {
       created_at: { type: "string" },
       updated_at: { type: "string" },
       working_directory: { type: "string" },
+      agent: agentProfileSchema(),
       error: { type: "string" },
       workspace: { type: "object" },
     },
@@ -547,6 +554,15 @@ function runDiagnosticsSchema() {
       "updated_at",
       "working_directory",
     ],
+  };
+}
+
+function agentProfileSchema() {
+  return {
+    type: "string" as const,
+    enum: [...AGENT_PROFILE_NAMES],
+    description:
+      "Optional execution profile. Explore and review are read-only in the current workspace; implement uses an isolated worktree with write tools.",
   };
 }
 

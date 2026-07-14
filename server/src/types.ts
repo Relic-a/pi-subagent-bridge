@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { AgentProfileName } from "./agent-profiles.js";
 import type { PiRpcClient } from "./pi-rpc-client.js";
 
 export type RunState =
@@ -30,6 +31,7 @@ export interface ModelInfo {
 export interface StartRunInput {
   task: string;
   working_directory: string;
+  agent?: AgentProfileName;
   provider?: string;
   model_id?: string;
   thinking_level?: string;
@@ -66,6 +68,7 @@ export interface RunResult {
   run_id: string;
   state: RunState;
   final_answer: string;
+  agent?: AgentProfileName;
   error?: string;
   session_id?: string;
   workspace?: RunWorkspace;
@@ -124,6 +127,7 @@ export interface RunDiagnostics {
   created_at: string;
   updated_at: string;
   working_directory: string;
+  agent?: AgentProfileName;
   provider?: string;
   model_id?: string;
   thinking_level?: string;
@@ -151,6 +155,7 @@ export interface ActiveRun {
   timeoutTimer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
   client: PiRpcClient;
+  agent?: AgentProfileName;
   sessionId?: string;
   sessionSnapshot?: Map<string, number>;
   settled: boolean;

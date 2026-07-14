@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { isAgentProfileName } from "./agent-profiles.js";
 import type {
   RunEvent,
   RunEventKind,
@@ -32,6 +33,7 @@ export class ToolCallStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         working_directory TEXT NOT NULL,
+        agent TEXT,
         provider TEXT,
         model_id TEXT,
         thinking_level TEXT,
@@ -63,6 +65,7 @@ export class ToolCallStore {
       CREATE INDEX IF NOT EXISTS idx_run_events_run_id_sequence
         ON run_events(run_id, sequence DESC);
     `);
+    this.ensureColumn("runs", "agent", "TEXT");
     this.ensureColumn("runs", "session_id", "TEXT");
     this.ensureColumn("runs", "workspace_json", "TEXT");
     this.migrateSchema();
@@ -75,8 +78,8 @@ export class ToolCallStore {
     this.db
       .prepare(
         `INSERT INTO runs
-        (run_id, task, state, created_at, updated_at, working_directory, provider, model_id, thinking_level, session_id, error, final_answer, workspace_json)
-        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer, @workspace_json)`,
+        (run_id, task, state, created_at, updated_at, working_directory, agent, provider, model_id, thinking_level, session_id, error, final_answer, workspace_json)
+        VALUES (@run_id, @task, @state, @created_at, @updated_at, @working_directory, @agent, @provider, @model_id, @thinking_level, @session_id, @error, @final_answer, @workspace_json)`,
       )
       .run(normalizeRecord(record));
     return this.pruneRuns(protectedRunIds);
@@ -315,6 +318,7 @@ interface DbRun {
   created_at: string;
   updated_at: string;
   working_directory: string;
+  agent: string | null;
   provider: string | null;
   model_id: string | null;
   thinking_level: string | null;
@@ -346,6 +350,7 @@ function normalizeRecord(
 ): Record<string, unknown> {
   return {
     ...record,
+    agent: record.agent ?? null,
     provider: record.provider ?? null,
     model_id: record.model_id ?? null,
     thinking_level: record.thinking_level ?? null,
@@ -364,6 +369,7 @@ function mapRun(row: DbRun): RunRecord {
     created_at: row.created_at,
     updated_at: row.updated_at,
     working_directory: row.working_directory,
+    agent: isAgentProfileName(row.agent) ? row.agent : undefined,
     provider: row.provider ?? undefined,
     model_id: row.model_id ?? undefined,
     thinking_level: row.thinking_level ?? undefined,

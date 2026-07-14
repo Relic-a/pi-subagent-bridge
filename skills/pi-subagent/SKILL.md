@@ -26,6 +26,23 @@ that they want Pi.
 Once Pi is selected under the rules above, use this skill to delegate coding
 work, compare Pi models, or inspect Pi subagent activity.
 
+## Execution Profiles
+
+Pass `agent` to `pi_run` or `pi_start` when the task benefits from a predefined
+role and permission set:
+
+- Use `agent: "explore"` to map code, data flow, conventions, and risks with
+  read-only Pi tools in the current workspace.
+- Use `agent: "review"` to perform an independent, severity-ordered code review
+  with the same read-only Pi tools.
+- Use `agent: "implement"` to make scoped changes with write tools in an
+  isolated git worktree.
+
+Write a neutral task that states the desired outcome. Do not repeat or simulate
+the profile instructions in the task; the bridge injects them and forces the
+profile's workspace mode. Treat the read-only profiles as Pi tool restrictions,
+not as an operating-system sandbox for untrusted repositories.
+
 ## Workflow
 
 - Prefer the default Pi model unless the task clearly needs a particular provider, context size, reasoning support, or input capability.
