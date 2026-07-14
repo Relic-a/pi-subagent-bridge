@@ -167,6 +167,10 @@ def handle(message):
         if prompt_file:
             with open(prompt_file, "w", encoding="utf-8") as fh:
                 fh.write(text)
+        prompt_request_file = os.environ.get("FAKE_PI_PROMPT_REQUEST_FILE")
+        if prompt_request_file:
+            with open(prompt_request_file, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(message) + "\n")
         maybe_write_session_file()
         if (
             os.environ.get("FAKE_PI_SUPPRESS_SESSION_RPC") != "1"

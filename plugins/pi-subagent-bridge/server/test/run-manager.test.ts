@@ -91,6 +91,7 @@ describe("RunManager", () => {
     delete process.env.FAKE_PI_ABORT_FILE;
     delete process.env.FAKE_PI_ARGS_FILE;
     delete process.env.FAKE_PI_PROMPT_FILE;
+    delete process.env.FAKE_PI_PROMPT_REQUEST_FILE;
     delete process.env.FAKE_PI_SIGNAL_FILE;
     delete process.env.FAKE_PI_SESSION_DIR;
     delete process.env.FAKE_PI_SUPPRESS_SESSION_RPC;
@@ -219,7 +220,9 @@ describe("RunManager", () => {
   it("steers an active run through its live RPC client and records acknowledgement", async () => {
     process.env.FAKE_PI_DELAY_MS = "500";
     const promptFile = path.join(tmp, "prompt.txt");
+    const promptRequestFile = path.join(tmp, "prompt-requests.jsonl");
     process.env.FAKE_PI_PROMPT_FILE = promptFile;
+    process.env.FAKE_PI_PROMPT_REQUEST_FILE = promptRequestFile;
     const { run_id } = await manager.start({
       task: "finish later",
       working_directory: tmp,
@@ -232,6 +235,15 @@ describe("RunManager", () => {
     expect(fs.readFileSync(promptFile, "utf8")).toContain(
       "Coordinator steering",
     );
+    const promptRequests = fs
+      .readFileSync(promptRequestFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(promptRequests.at(-1)).toMatchObject({
+      type: "prompt",
+      streamingBehavior: "steer",
+    });
     expect(manager.getRunEvents(run_id).map((event) => event.kind)).toEqual(
       expect.arrayContaining(["steer_sent", "steer_acknowledged"]),
     );

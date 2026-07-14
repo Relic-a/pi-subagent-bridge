@@ -347,6 +347,7 @@ export class RunManager {
         this.options.steerMethod ?? this.options.startMethod,
         {
           message: `Coordinator steering (follow this in addition to the original task):\n${text}`,
+          streamingBehavior: "steer",
         },
       );
       const acknowledged = this.options.store.addRunEvent({
