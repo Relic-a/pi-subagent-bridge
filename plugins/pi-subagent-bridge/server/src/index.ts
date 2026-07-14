@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { listModels } from "./model-catalog.js";
+import { preparePiEnvironment } from "./pi-environment.js";
 import { RunManager } from "./run-manager.js";
 import { discoverRuntime, findExecutable } from "./runtime-discovery.js";
 import { ToolCallStore } from "./tool-call-store.js";
@@ -33,7 +34,8 @@ const ModelsSchema = z.object({ query: z.string().optional() });
 
 const dataDir = prepareDataDir();
 const runtime = discoverRuntime();
-const piEnv = preparePiEnvironment(runtime.env, dataDir);
+const piEnvironment = preparePiEnvironment(runtime.env, dataDir);
+const piEnv = piEnvironment.env;
 const store = new ToolCallStore(path.join(dataDir, "state.sqlite"), {
   maxToolCalls: envInt("PI_BRIDGE_MAX_TOOL_CALLS", 1000),
   maxRuns: envInt("PI_BRIDGE_MAX_RUNS", 200),
@@ -69,7 +71,7 @@ const manager = new RunManager({
 });
 
 const server = new Server(
-  { name: "pi-subagent-bridge", version: "0.2.4" },
+  { name: "pi-subagent-bridge", version: "0.2.5" },
   { capabilities: { tools: {} } },
 );
 server.onerror = (error) => {
@@ -539,6 +541,16 @@ async function doctor() {
   }
   checks.push({ name: "state_directory", ok: true, detail: dataDir });
   checks.push({
+    name: "pi_agent_directory",
+    ok: true,
+    detail: `${piEnvironment.agentDir} (${piEnvironment.agentDirSource})`,
+  });
+  checks.push({
+    name: "pi_session_directory",
+    ok: true,
+    detail: piEnvironment.sessionDir,
+  });
+  checks.push({
     name: "allowed_roots",
     ok: true,
     detail: process.env.PI_ALLOWED_ROOTS ?? defaultAllowedRoot(),
@@ -592,23 +604,6 @@ function prepareDataDir(): string {
   throw new Error(
     `No writable Pi bridge data directory found: ${errors.join("; ")}`,
   );
-}
-
-function preparePiEnvironment(
-  env: NodeJS.ProcessEnv,
-  bridgeDataDir: string,
-): NodeJS.ProcessEnv {
-  const agentDir =
-    env.PI_CODING_AGENT_DIR ?? path.join(bridgeDataDir, "pi-agent");
-  const sessionDir =
-    env.PI_CODING_AGENT_SESSION_DIR ?? path.join(agentDir, "sessions");
-  fs.mkdirSync(agentDir, { recursive: true });
-  fs.mkdirSync(sessionDir, { recursive: true });
-  return {
-    ...env,
-    PI_CODING_AGENT_DIR: agentDir,
-    PI_CODING_AGENT_SESSION_DIR: sessionDir,
-  };
 }
 
 function defaultAllowedRoot(): string {

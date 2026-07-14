@@ -2,7 +2,7 @@
 
 Codex plugin marketplace repo that exposes a bundled MCP stdio server for managing Pi coding-agent subprocesses.
 
-> Status: v0.2.4. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
+> Status: v0.2.5. Linux and macOS are supported; Windows has not yet been tested. Node.js 22+, Python 3, Git, Codex, and the `pi` CLI are required.
 
 ## What It Provides
 
@@ -109,7 +109,7 @@ Environment variables:
 - `PI_ALLOWED_ROOTS`: path-delimited roots allowed for `working_directory`. Default: the current user's home directory.
 - `PI_BRIDGE_WORKTREE_ROOT_NAME`: repo-local directory name for isolated git worktrees. Default: `.pi-subagent-runs`.
 - `PI_BRIDGE_DATA_DIR`: SQLite state directory. Default: `$XDG_STATE_HOME/pi-subagent-bridge`, then `$HOME/.local/state/pi-subagent-bridge`, with the OS temporary directory as a fallback.
-- `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR`: optional Pi state overrides. When unset, the bridge uses writable directories under `PI_BRIDGE_DATA_DIR` for every Pi invocation, including model discovery.
+- `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR`: optional Pi state overrides. When the agent directory is unset, the bridge reuses an existing `$HOME/.pi/agent` (or the process account's home) so Pi authentication, providers, and models match the user's CLI; otherwise it falls back to `PI_BRIDGE_DATA_DIR/pi-agent`. Sessions default to `PI_BRIDGE_DATA_DIR/pi-agent/sessions` and remain separate from interactive Pi sessions.
 - `PI_BRIDGE_MAX_RUNTIME_MS`: default `1800000`.
 - `PI_BRIDGE_STOP_GRACE_MS`: default `5000`.
 - `PI_BRIDGE_MAX_TOOL_CALLS`: default `1000`.
